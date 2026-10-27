@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: cirl-gateway
+    runtime: python
+    plan: free
+    # Python version is pinned in .python-version
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: GATEWAY_API_KEY
+        sync: false
+      - key: SESSION_TTL_MINUTES
+        sync: false
+      - key: CIRL_MODE_CHECK_EXISTING_EIA
+        sync: false
+      - key: CIRL_MODE_SEND_OTP
+        sync: false
+      - key: CIRL_MODE_VERIFY_OTP
+        sync: false
+      - key: LOG_LEVEL
+        sync: false
