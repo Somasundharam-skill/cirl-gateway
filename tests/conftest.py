@@ -31,14 +31,30 @@ def fake_clock(monkeypatch):
     return fc
 
 
+ALL_TOOLS = "start_journey,record_consent,check_existing_eia,send_otp,verify_otp,send_email_otp,verify_email_otp"
+
+
 @pytest.fixture
 def app(fake_clock):
-    return create_app(load_settings({"GATEWAY_API_KEY": API_KEY}))
+    # Every tool enabled, so the disabled-by-default code (check_existing_eia,
+    # send_otp, verify_otp) stays tested. default_app has the real default.
+    return create_app(load_settings({"GATEWAY_API_KEY": API_KEY, "ENABLED_TOOLS": ALL_TOOLS}))
 
 
 @pytest.fixture
 def client(app):
     return TestClient(app)
+
+
+@pytest.fixture
+def default_app(fake_clock):
+    """ENABLED_TOOLS unset: the registration-only journey."""
+    return create_app(load_settings({"GATEWAY_API_KEY": API_KEY}))
+
+
+@pytest.fixture
+def default_client(default_app):
+    return TestClient(default_app)
 
 
 class ListHandler(logging.Handler):

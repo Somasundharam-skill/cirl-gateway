@@ -37,6 +37,7 @@ def test_initialized_notification_accepted(client):
 
 
 def test_tools_list_shape(client):
+    # `client` has every tool enabled; the default list is tested in test_enabled_tools.py.
     tools = rpc(client, "tools/list").json()["result"]["tools"]
     names = [t["name"] for t in tools]
     assert names == [

@@ -8,6 +8,11 @@ from dataclasses import dataclass, field
 CIRL_APIS = ("CHECK_EXISTING_EIA", "SEND_OTP", "VERIFY_OTP", "SEND_EMAIL_OTP")
 CIRL_MODES = ("mock", "real")
 
+# Tools listed and callable. For now the journey is registration only; the
+# other tools (check_existing_eia, send_otp, verify_otp) stay in the code but
+# are disabled unless named in ENABLED_TOOLS.
+DEFAULT_ENABLED_TOOLS = ("start_journey", "record_consent", "send_email_otp", "verify_email_otp")
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -16,6 +21,7 @@ class Settings:
     log_level: str = "INFO"
     cirl_modes: dict[str, str] = field(default_factory=dict)
     mock_email_otp: str = "123456"
+    enabled_tools: tuple[str, ...] = DEFAULT_ENABLED_TOOLS
 
     def cirl_mode(self, api: str) -> str:
         return self.cirl_modes.get(api, "mock")
@@ -39,10 +45,15 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
     if not re.fullmatch(r"[0-9]{6}", mock_email_otp):
         raise ValueError("MOCK_EMAIL_OTP must be 6 digits")
 
+    # Comma-separated; empty or unset means the default. Unknown names are
+    # rejected at startup by app.tools.check_enabled_tools.
+    enabled = tuple(dict.fromkeys(n.strip() for n in env.get("ENABLED_TOOLS", "").split(",") if n.strip()))
+
     return Settings(
         gateway_api_key=env.get("GATEWAY_API_KEY", ""),
         session_ttl_minutes=ttl,
         log_level=env.get("LOG_LEVEL", "INFO").upper(),
         cirl_modes=modes,
         mock_email_otp=mock_email_otp,
+        enabled_tools=enabled or DEFAULT_ENABLED_TOOLS,
     )

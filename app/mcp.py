@@ -11,7 +11,7 @@ from typing import Any
 from app.audit import AuditLog
 from app.config import Settings
 from app.sessions import SessionStore
-from app.tools import TOOLS, ToolContext, call_tool, list_tools
+from app.tools import ToolContext, call_tool, enabled_tool, list_tools
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "cirl-gateway", "version": "0.1.0"}
@@ -74,7 +74,7 @@ def handle(
     if method == "ping":
         return _result(req_id, {})
     if method == "tools/list":
-        return _result(req_id, {"tools": list_tools()})
+        return _result(req_id, {"tools": list_tools(settings)})
     if method == "tools/call":
         return _tools_call(req_id, params, headers, settings, store, audit)
     return rpc_error(req_id, METHOD_NOT_FOUND, f"Method not found: {method}")
@@ -87,8 +87,8 @@ def _tools_call(req_id, params, headers, settings, store, audit) -> RpcOutcome:
         return rpc_error(req_id, INVALID_PARAMS, "params.name must be a string")
     if not isinstance(args, dict):
         return rpc_error(req_id, INVALID_PARAMS, "params.arguments must be an object")
-    tool = TOOLS.get(name)
-    if tool is None:
+    tool = enabled_tool(settings, name)
+    if tool is None:  # a disabled tool is treated exactly like an unknown one
         return rpc_error(req_id, INVALID_PARAMS, f"Unknown tool: {name}")
 
     conversation_id = (headers.get("x-sa-conversation-id") or "").strip()

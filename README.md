@@ -34,6 +34,7 @@ python -m pytest
 |---|---|---|
 | `GATEWAY_API_KEY` | *(none)* | Bearer token required on `/mcp` and `/admin/audit`. If unset, every request is rejected. |
 | `SESSION_TTL_MINUTES` | `60` | Idle time before a conversation's session is dropped. |
+| `ENABLED_TOOLS` | `start_journey,record_consent,send_email_otp,verify_email_otp` | Comma-separated tools that `tools/list` shows and `tools/call` accepts. Empty means the default. A tool that isn't listed is rejected exactly like an unknown tool (-32602). An unknown name stops the server at startup. |
 | `CIRL_MODE_CHECK_EXISTING_EIA` | `mock` | `mock` or `real` for CIRL verifyeIAAccount. |
 | `CIRL_MODE_SEND_OTP` | `mock` | `mock` or `real` for CIRL sendOtp. |
 | `CIRL_MODE_VERIFY_OTP` | `mock` | `mock` or `real` for CIRL verifyOtp. |
@@ -70,15 +71,17 @@ and the channel are stored.
 
 ## Tools and mock behaviour
 
-Typical order (decided by Perfox Steps, not the gateway): `start_journey` → `record_consent` → `check_existing_eia` → `send_otp` → `verify_otp`. Each tool still enforces its own preconditions, such as consent.
+**For now the journey is registration only:** `start_journey` → `record_consent` → `send_email_otp` → `verify_email_otp` (consent, email, email OTP, verified). These four are the default `ENABLED_TOOLS`. The order is decided by Perfox Steps, not the gateway. Each tool still enforces its own preconditions, such as consent.
+
+`check_existing_eia`, `send_otp` and `verify_otp` are **disabled by default**. Their code and tests are kept, and they can be switched back on by adding them to `ENABLED_TOOLS`. While disabled, they are not listed and `tools/call` answers `Unknown tool`.
 
 | Tool | Arguments | Requires | Mock behaviour | Failures (`isError`) |
 |---|---|---|---|---|
 | `start_journey` | – | – | Creates a session for the conversation and saves the phone and channel (audit event `journey_started`). Idempotent: if a session already exists for this conversation id, it is returned unchanged (audit event `journey_already_started`). A new chat has a new conversation id, so it starts fresh. | – |
 | `record_consent` | `consent: bool`, `notice_version: string` | session (created if missing) | Stores the consent time and notice version. Returns a `consent_id` (`CNS-…`). Idempotent: if consent is already recorded, the existing `consent_id`, timestamp and notice version are returned. | `GW-003` consent false (clears any earlier consent), `GW-004` invalid input |
-| `check_existing_eia` | `pan` **or** `uid`, `email_id`, `mobile_no?` | consent | PAN `ABCPE1234E` → `status "true"`, `eia_no "2345678904567"`. Anything else → `status "false"`, `E-102 "eIA Account does not exist."`. Both are successful calls (`eia_exists` true/false). Generates `trxn_no` `C1-` + 17 digits and saves it as `client_trxn_id`. `mobile_no` defaults to the session phone. | `GW-004` bad PAN/UID/email/mobile, or both/neither of PAN and UID. `GW-002` no consent |
-| `send_otp` | – | consent, `client_trxn_id` | Returns a masked email (`ra*****@gmail.com`), masked mobile (`98XXXXXX20`), `otp_start_date`, `otp_end_date`, `otp_expire_time: 300` and `trxn_no`. The OTP is always `123456`. A new OTP resets the wrong-attempt count. | `E-203` more than 5 sends, `GW-005` no eIA check yet |
-| `verify_otp` | `otp_no: string` (6 digits) | `send_otp` | `123456` → `otp_verified: true`. | `E-302` wrong OTP, `E-303` more than 300 s after send, `E-304` locked after 3 wrong attempts, `GW-006` no OTP sent, `GW-004` not 6 digits |
+| `check_existing_eia` *(disabled)* | `pan` **or** `uid`, `email_id`, `mobile_no?` | consent | PAN `ABCPE1234E` → `status "true"`, `eia_no "2345678904567"`. Anything else → `status "false"`, `E-102 "eIA Account does not exist."`. Both are successful calls (`eia_exists` true/false). Generates `trxn_no` `C1-` + 17 digits and saves it as `client_trxn_id`. `mobile_no` defaults to the session phone. | `GW-004` bad PAN/UID/email/mobile, or both/neither of PAN and UID. `GW-002` no consent |
+| `send_otp` *(disabled)* | – | consent, `client_trxn_id` | Returns a masked email (`ra*****@gmail.com`), masked mobile (`98XXXXXX20`), `otp_start_date`, `otp_end_date`, `otp_expire_time: 300` and `trxn_no`. The OTP is always `123456`. A new OTP resets the wrong-attempt count. | `E-203` more than 5 sends, `GW-005` no eIA check yet |
+| `verify_otp` *(disabled)* | `otp_no: string` (6 digits) | `send_otp` | `123456` → `otp_verified: true`. | `E-302` wrong OTP, `E-303` more than 300 s after send, `E-304` locked after 3 wrong attempts, `GW-006` no OTP sent, `GW-004` not 6 digits |
 | `send_email_otp` | `email_id: string` | consent | "Emails" the code `MOCK_EMAIL_OTP` (default `123456`), valid 120 s. Stores the email and the expiry time. Returns `{ok, email_id, expires_in_seconds: 120}`. | `GW-002` no consent, `GW-004` invalid email, `GW-010` more than 5 sends, `GW-013` locked |
 | `verify_email_otp` | `otp_no: string` (6 digits) | `send_email_otp` | The correct code → `email_verified: true`. | `GW-011` wrong code, `GW-012` more than 120 s after send, `GW-013` locked after 3 wrong attempts in total (across resends, for the whole session), `GW-014` no email OTP sent, `GW-002` no consent, `GW-004` not 6 digits |
 
@@ -111,7 +114,7 @@ The free plan sleeps when idle, and that clears all in-memory sessions and audit
 app/
   main.py          FastAPI app: /health, /mcp, /admin/audit, bearer auth
   mcp.py           JSON-RPC 2.0 dispatch
-  tools.py         7 tool schemas and handlers (CIRL access only via cirl_client)
+  tools.py         7 tool schemas and handlers (CIRL access only via cirl_client); ENABLED_TOOLS filter
   cirl_client.py   one function per CIRL API; mock or real (NotImplementedError)
   sessions.py      SessionStore interface + in-memory TTL store
   audit.py         masked audit log

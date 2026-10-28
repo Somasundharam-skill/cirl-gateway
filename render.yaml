@@ -12,6 +12,8 @@ services:
         sync: false
       - key: SESSION_TTL_MINUTES
         sync: false
+      - key: ENABLED_TOOLS
+        sync: false
       - key: CIRL_MODE_CHECK_EXISTING_EIA
         sync: false
       - key: CIRL_MODE_SEND_OTP

@@ -54,13 +54,18 @@ $init = Invoke-Mcp "initialize" @{
 Write-Host ("initialize: protocolVersion={0} server={1}" -f $init.result.protocolVersion, $init.result.serverInfo.name)
 
 $tools = Invoke-Mcp "tools/list"
-Write-Host ("tools/list: " + (($tools.result.tools | ForEach-Object { $_.name }) -join ", "))
+$toolNames = @($tools.result.tools | ForEach-Object { $_.name })
+Write-Host ("tools/list: " + ($toolNames -join ", "))
 
 Invoke-Tool "start_journey"
 Invoke-Tool "record_consent" @{ consent = $true; notice_version = "v1.0" }
-Invoke-Tool "check_existing_eia" @{ pan = "ABCPE1234E"; email_id = "rahul@gmail.com" }
-Invoke-Tool "send_otp"
-Invoke-Tool "verify_otp" @{ otp_no = "123456" }
+
+# Disabled by default (ENABLED_TOOLS): only run them if the server lists them.
+if ($toolNames -contains "check_existing_eia") {
+    Invoke-Tool "check_existing_eia" @{ pan = "ABCPE1234E"; email_id = "rahul@gmail.com" }
+    Invoke-Tool "send_otp"
+    Invoke-Tool "verify_otp" @{ otp_no = "123456" }
+}
 
 # Email OTP (mock code = MOCK_EMAIL_OTP, default 123456)
 Invoke-Tool "send_email_otp" @{ email_id = "rahul@gmail.com" }

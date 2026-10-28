@@ -451,9 +451,7 @@ TOOLS: dict[str, Tool] = {
     for t in [
         Tool(
             "start_journey",
-            "Starts the eIA onboarding journey for this conversation. If a journey already exists for this "
-            "conversation it is returned unchanged, so calling it again is safe. "
-            "Call this first, as soon as the customer wants to open or check an eIA.",
+            "Starts a new eIA registration for this conversation. Call this once at the start.",
             _schema(),
             start_journey,
         ),
@@ -526,11 +524,25 @@ TOOLS: dict[str, Tool] = {
 }
 
 
-def list_tools() -> list[dict]:
+def check_enabled_tools(settings: Settings) -> None:
+    """Fail at startup if ENABLED_TOOLS names a tool that doesn't exist (e.g. a typo)."""
+    unknown = [name for name in settings.enabled_tools if name not in TOOLS]
+    if unknown:
+        raise ValueError(f"ENABLED_TOOLS has unknown tool(s): {', '.join(unknown)}. Known tools: {', '.join(TOOLS)}")
+
+
+def enabled_tool(settings: Settings, name: str) -> Tool | None:
+    """The tool, or None if it doesn't exist or isn't in ENABLED_TOOLS."""
+    return TOOLS.get(name) if name in settings.enabled_tools else None
+
+
+def list_tools(settings: Settings) -> list[dict]:
+    # Only enabled tools, in registry order.
     # input_schema as specified for Perfox; inputSchema is the MCP-standard spelling.
     return [
         {"name": t.name, "description": t.description, "input_schema": t.input_schema, "inputSchema": t.input_schema}
         for t in TOOLS.values()
+        if t.name in settings.enabled_tools
     ]
 
 

@@ -14,6 +14,7 @@ from app import mcp
 from app.audit import AuditLog
 from app.config import Settings, load_settings
 from app.sessions import InMemorySessionStore
+from app.tools import check_enabled_tools
 
 logger = logging.getLogger("cirl_gateway")
 
@@ -38,6 +39,7 @@ def _unauthorized() -> JSONResponse:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or load_settings()
+    check_enabled_tools(settings)
     configure_logging(settings.log_level)
     if not settings.gateway_api_key:
         logger.warning("GATEWAY_API_KEY is not set: all /mcp and /admin requests will be rejected")

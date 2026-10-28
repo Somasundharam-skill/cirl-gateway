@@ -4,7 +4,7 @@ from app.config import load_settings
 from app.main import create_app
 from app.tools import TOOLS
 from fastapi.testclient import TestClient
-from tests.conftest import API_KEY, call, headers, start_to_consent, start_to_otp
+from tests.conftest import ALL_TOOLS, API_KEY, call, headers, start_to_consent, start_to_otp
 
 
 def assert_tool_error(result, payload, code):
@@ -319,7 +319,9 @@ def test_messages_name_no_tools(client, app, fake_clock):
 
 
 def test_real_mode_fails_safely(fake_clock):
-    app = create_app(load_settings({"GATEWAY_API_KEY": API_KEY, "CIRL_MODE_CHECK_EXISTING_EIA": "real"}))
+    app = create_app(load_settings(
+        {"GATEWAY_API_KEY": API_KEY, "CIRL_MODE_CHECK_EXISTING_EIA": "real", "ENABLED_TOOLS": ALL_TOOLS}
+    ))
     client = TestClient(app)
     start_to_consent(client)
     result, payload = call(client, "check_existing_eia", {"pan": "ABCPE1234E", "email_id": "rahul@gmail.com"})
