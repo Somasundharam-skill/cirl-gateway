@@ -15,6 +15,7 @@ MOCK_EXISTING_PAN = "ABCPE1234E"
 MOCK_EXISTING_EIA_NO = "2345678904567"
 MOCK_OTP = "123456"
 OTP_EXPIRE_SECONDS = 300
+EMAIL_OTP_EXPIRE_SECONDS = 120
 
 
 def new_trxn_no() -> str:
@@ -77,3 +78,21 @@ def verify_otp(settings: Settings, *, trxn_no: str, otp_no: str) -> dict:
     if secrets.compare_digest(otp_no, MOCK_OTP):
         return {"status": "true", "trxn_no": trxn_no, "error_code": "", "error_msg": ""}
     return {"status": "false", "trxn_no": trxn_no, "error_code": "E-302", "error_msg": "Invalid OTP."}
+
+
+def send_email_otp(settings: Settings, *, email_id: str) -> dict:
+    """CIRL email OTP send. The mock OTP is MOCK_EMAIL_OTP."""
+    if settings.cirl_mode("SEND_EMAIL_OTP") == "real":
+        _real("sendEmailOtp")
+
+    return {"status": "true", "email_id": mask_email(email_id), "expires_in_seconds": EMAIL_OTP_EXPIRE_SECONDS}
+
+
+def verify_email_otp(settings: Settings, *, email_id: str, otp_no: str) -> dict:
+    """CIRL email OTP verification (same CIRL_MODE_SEND_EMAIL_OTP flag as the send)."""
+    if settings.cirl_mode("SEND_EMAIL_OTP") == "real":
+        _real("verifyEmailOtp")
+
+    if secrets.compare_digest(otp_no, settings.mock_email_otp):
+        return {"status": "true"}
+    return {"status": "false"}

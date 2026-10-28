@@ -39,7 +39,15 @@ def test_initialized_notification_accepted(client):
 def test_tools_list_shape(client):
     tools = rpc(client, "tools/list").json()["result"]["tools"]
     names = [t["name"] for t in tools]
-    assert names == ["start_journey", "record_consent", "check_existing_eia", "send_otp", "verify_otp"]
+    assert names == [
+        "start_journey",
+        "record_consent",
+        "check_existing_eia",
+        "send_otp",
+        "verify_otp",
+        "send_email_otp",
+        "verify_email_otp",
+    ]
     for t in tools:
         assert t["description"] and "call" in t["description"].lower()
         assert t["input_schema"]["type"] == "object"

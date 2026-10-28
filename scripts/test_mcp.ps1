@@ -61,3 +61,8 @@ Invoke-Tool "record_consent" @{ consent = $true; notice_version = "v1.0" }
 Invoke-Tool "check_existing_eia" @{ pan = "ABCPE1234E"; email_id = "rahul@gmail.com" }
 Invoke-Tool "send_otp"
 Invoke-Tool "verify_otp" @{ otp_no = "123456" }
+
+# Email OTP (mock code = MOCK_EMAIL_OTP, default 123456)
+Invoke-Tool "send_email_otp" @{ email_id = "rahul@gmail.com" }
+Invoke-Tool "verify_email_otp" @{ otp_no = "000000" }   # wrong code -> isError GW-011
+Invoke-Tool "verify_email_otp" @{ otp_no = "123456" }

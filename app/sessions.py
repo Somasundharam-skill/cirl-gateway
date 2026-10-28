@@ -36,6 +36,12 @@ class Session:
     otp_failed_attempts: int = 0
     otp_verified: bool = False
 
+    email_otp_email_id: str | None = None
+    email_otp_send_count: int = 0
+    email_otp_expires_at: float | None = None
+    email_otp_failed_attempts: int = 0  # counted across resends
+    email_verified: bool = False
+
 
 class SessionStore(ABC):
     @abstractmethod
