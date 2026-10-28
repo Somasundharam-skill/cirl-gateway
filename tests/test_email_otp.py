@@ -135,13 +135,16 @@ def test_lockout_counts_across_resends(client):
     assert_tool_error(*send(client), "GW-013")
 
 
-def test_start_journey_clears_email_lock(client):
+def test_email_lock_survives_start_journey(client):
     start_to_consent(client)
     send(client)
     for otp in ("000000", "000001", "000002"):
         verify(client, otp)
-    start_to_consent(client)
-    result, _ = send(client)
+    start_to_consent(client)  # same conversation: idempotent, lock stays
+    assert_tool_error(*send(client), "GW-013")
+    # A new conversation starts fresh.
+    start_to_consent(client, conversation_id="conv-test-2")
+    result, _ = call(client, "send_email_otp", {"email_id": EMAIL}, conversation_id="conv-test-2")
     assert result["isError"] is False
 
 

@@ -78,7 +78,7 @@ def _require_session(ctx: ToolContext) -> Session:
         raise ToolError(
             "GW-001",
             "No active journey for this conversation.",
-            "The journey has not started or has expired. Call start_journey, then ask the customer for consent again.",
+            "The journey for this conversation has not started or has expired.",
         )
     return session
 
@@ -89,7 +89,7 @@ def _require_consent(ctx: ToolContext) -> Session:
         raise ToolError(
             "GW-002",
             "Customer consent has not been recorded.",
-            "Show the privacy notice, ask the customer whether they consent, then call record_consent.",
+            "Ask the customer for consent first.",
         )
     return session
 
@@ -115,19 +115,22 @@ def _reset_otp(session: Session) -> None:
 
 
 def start_journey(ctx: ToolContext, args: dict) -> tuple[dict, str]:
-    session = _new_session(ctx)
-    ctx.store.save(session)
+    # Idempotent within a conversation: an existing session is returned unchanged.
+    # A new chat has a new conversation id, so it starts fresh.
+    session = ctx.store.get(ctx.conversation_id)
+    event = "journey_already_started"
+    if session is None:
+        session = _new_session(ctx)
+        ctx.store.save(session)
+        event = "journey_started"
 
-    message = "Journey started. Show the customer the privacy notice and ask for consent, then call record_consent."
-    if session.phone is None:
-        message += " The customer's phone number is unknown, so ask for their 10-digit mobile number before check_existing_eia."
     return {
         "ok": True,
         "state": session.state,
         "phone": mask_phone(session.phone) if session.phone else None,
         "channel": session.channel,
-        "message_for_agent": message,
-    }, "journey_started"
+        "message_for_agent": "Journey started.",
+    }, event
 
 
 def record_consent(ctx: ToolContext, args: dict) -> tuple[dict, str]:
@@ -139,7 +142,7 @@ def record_consent(ctx: ToolContext, args: dict) -> tuple[dict, str]:
     notice_version = _opt_str(args, "notice_version")
     if not notice_version:
         raise _validation_error(
-            "notice_version is required.", "Call record_consent again with the version of the notice that was shown."
+            "notice_version is required.", "Provide the version of the privacy notice that was shown to the customer."
         )
 
     session = ctx.store.get(ctx.conversation_id) or _new_session(ctx)
@@ -155,8 +158,18 @@ def record_consent(ctx: ToolContext, args: dict) -> tuple[dict, str]:
             "GW-003",
             "Customer did not give consent.",
             "The customer declined consent. Explain that onboarding cannot continue without it and ask whether "
-            "they would like to consent. If they agree, call record_consent with consent=true.",
+            "they would like to consent.",
         )
+
+    if session.consent_id:
+        # Idempotent: consent already recorded, return the existing record unchanged.
+        return {
+            "ok": True,
+            "consent_id": session.consent_id,
+            "consent_at": session.consent_at,
+            "notice_version": session.notice_version,
+            "message_for_agent": "Consent recorded.",
+        }, "consent_already_recorded"
 
     session.consent_id = "CNS-" + uuid.uuid4().hex[:16].upper()
     session.consent_at = clock.iso()
@@ -169,8 +182,7 @@ def record_consent(ctx: ToolContext, args: dict) -> tuple[dict, str]:
         "consent_id": session.consent_id,
         "consent_at": session.consent_at,
         "notice_version": notice_version,
-        "message_for_agent": "Consent recorded. Ask for the customer's PAN (or Aadhaar UID) and email address, "
-        "then call check_existing_eia.",
+        "message_for_agent": "Consent recorded.",
     }, "consent_recorded"
 
 
@@ -224,18 +236,12 @@ def check_existing_eia(ctx: ToolContext, args: dict) -> tuple[dict, str]:
     session.state = "EIA_CHECKED"
     ctx.store.save(session)
 
-    if exists:
-        message = (
-            "The customer already has an eIA. Tell them, then call send_otp to verify their registered email and mobile."
-        )
-    else:
-        message = "No eIA exists for these details. Tell the customer, then call send_otp to verify their email and mobile."
     return {
         "ok": True,
         "eia_exists": exists,
         "client_trxn_id": trxn_no,
         "cirl_response": response,
-        "message_for_agent": message,
+        "message_for_agent": "An eIA already exists for these details." if exists else "No eIA exists for these details.",
     }, "eia_checked"
 
 
@@ -245,7 +251,7 @@ def send_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
         raise ToolError(
             "GW-005",
             "No eIA check has been done in this journey.",
-            "Ask for the customer's PAN (or Aadhaar) and email, call check_existing_eia, then send_otp.",
+            "The customer's eIA details have not been checked yet.",
         )
     if session.otp_send_count >= MAX_OTP_SENDS:
         raise ToolError(
@@ -269,7 +275,7 @@ def send_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
         "sends_remaining": MAX_OTP_SENDS - session.otp_send_count,
         "cirl_response": response,
         "message_for_agent": f"OTP sent to {response['masked_mobile_no']} and {response['masked_email_id']}. "
-        f"Ask the customer for the 6-digit OTP (valid {response['otp_expire_time'] // 60} minutes), then call verify_otp.",
+        f"It is valid for {response['otp_expire_time'] // 60} minutes.",
     }, "otp_sent"
 
 
@@ -280,13 +286,13 @@ def verify_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
 
     session = _require_consent(ctx)
     if session.otp_sent_at is None:
-        raise ToolError("GW-006", "No OTP has been sent.", "Call send_otp first, then ask the customer for the OTP.")
+        raise ToolError("GW-006", "No OTP has been sent.", "No OTP has been sent to the customer yet.")
     if session.otp_verified:
         return {"ok": True, "otp_verified": True, "message_for_agent": "OTP already verified."}, "otp_verified"
 
     sends_left = MAX_OTP_SENDS - session.otp_send_count
     resend_hint = (
-        f" Offer to send a new OTP (call send_otp; {sends_left} left)." if sends_left > 0
+        f" Offer to send a new OTP ({sends_left} left)." if sends_left > 0
         else " No more OTPs can be sent in this conversation."
     )
     if session.otp_failed_attempts >= MAX_OTP_ATTEMPTS:
@@ -372,7 +378,7 @@ def send_email_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
         "ok": True,
         "email_id": email_id,
         "expires_in_seconds": expires_in,
-        "message_for_agent": "A code was emailed to the customer. Ask them for it, then call verify_email_otp.",
+        "message_for_agent": f"A code was emailed to the customer. It is valid for {expires_in} seconds.",
     }, "email_otp_sent"
 
 
@@ -382,7 +388,7 @@ def verify_email_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
         raise ToolError(
             "GW-014",
             "No email OTP has been sent.",
-            "Ask the customer for their email ID and call send_email_otp first.",
+            "No email code has been sent to the customer yet.",
         )
     if session.email_verified:
         return {"ok": True, "email_verified": True, "message_for_agent": "Email already verified."}, "email_verified"
@@ -445,14 +451,16 @@ TOOLS: dict[str, Tool] = {
     for t in [
         Tool(
             "start_journey",
-            "Starts a fresh eIA onboarding journey for this conversation, discarding any previous progress. "
-            "Call this first, as soon as the customer wants to open or check an eIA, and whenever they want to start over.",
+            "Starts the eIA onboarding journey for this conversation. If a journey already exists for this "
+            "conversation it is returned unchanged, so calling it again is safe. "
+            "Call this first, as soon as the customer wants to open or check an eIA.",
             _schema(),
             start_journey,
         ),
         Tool(
             "record_consent",
             "Records whether the customer accepted the privacy notice and returns a consent_id. "
+            "If consent is already recorded, the existing consent_id is returned. "
             "Call this after showing the notice and getting a clear yes or no; it fails if consent is false.",
             _schema(
                 {

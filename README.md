@@ -59,8 +59,9 @@ python -m pytest
 - Notifications (requests without an `id`, e.g. `notifications/initialized`) get HTTP 202 with no body.
 - `tools/list` returns each tool's schema as `input_schema`, and also as `inputSchema` (the MCP-standard spelling).
 - `tools/call` returns `{content: [{type: "text", text: "<JSON>"}], isError}`.
-  - Success: `isError: false`, and the JSON has `ok: true` and `message_for_agent`.
-  - Business failure: `isError: true`, and the JSON has `ok: false`, `error_code`, `error_msg` and `message_for_agent` (what to ask the customer next).
+  - Success: `isError: false`, and the JSON has `ok: true` and a neutral `message_for_agent` (e.g. "Consent recorded.").
+  - Business failure: `isError: true`, and the JSON has `ok: false`, `error_code`, `error_msg` and `message_for_agent` (what the customer must fix for this tool).
+  - `message_for_agent` never names another tool or the next step, because the journey order is decided by Perfox Steps.
 - JSON-RPC errors are used only for protocol problems: parse error (-32700), invalid request or batch (-32600), unknown method (-32601), unknown tool, bad params or a missing `X-Sa-Conversation-Id` header (-32602).
 
 Headers read on every `tools/call`: `X-Sa-Conversation-Id` (required, the session key), `X-Sa-End-User-Phone`,
@@ -69,12 +70,12 @@ and the channel are stored.
 
 ## Tools and mock behaviour
 
-Journey order: `start_journey` → `record_consent` → `check_existing_eia` → `send_otp` → `verify_otp`.
+Typical order (decided by Perfox Steps, not the gateway): `start_journey` → `record_consent` → `check_existing_eia` → `send_otp` → `verify_otp`. Each tool still enforces its own preconditions, such as consent.
 
 | Tool | Arguments | Requires | Mock behaviour | Failures (`isError`) |
 |---|---|---|---|---|
-| `start_journey` | – | – | Creates a fresh session for the conversation and overwrites any existing one. Saves the phone and channel. Audit event `journey_started`. | – |
-| `record_consent` | `consent: bool`, `notice_version: string` | session (created if missing) | Stores the consent time and notice version. Returns a `consent_id` (`CNS-…`). | `GW-003` consent false (clears any earlier consent), `GW-004` invalid input |
+| `start_journey` | – | – | Creates a session for the conversation and saves the phone and channel (audit event `journey_started`). Idempotent: if a session already exists for this conversation id, it is returned unchanged (audit event `journey_already_started`). A new chat has a new conversation id, so it starts fresh. | – |
+| `record_consent` | `consent: bool`, `notice_version: string` | session (created if missing) | Stores the consent time and notice version. Returns a `consent_id` (`CNS-…`). Idempotent: if consent is already recorded, the existing `consent_id`, timestamp and notice version are returned. | `GW-003` consent false (clears any earlier consent), `GW-004` invalid input |
 | `check_existing_eia` | `pan` **or** `uid`, `email_id`, `mobile_no?` | consent | PAN `ABCPE1234E` → `status "true"`, `eia_no "2345678904567"`. Anything else → `status "false"`, `E-102 "eIA Account does not exist."`. Both are successful calls (`eia_exists` true/false). Generates `trxn_no` `C1-` + 17 digits and saves it as `client_trxn_id`. `mobile_no` defaults to the session phone. | `GW-004` bad PAN/UID/email/mobile, or both/neither of PAN and UID. `GW-002` no consent |
 | `send_otp` | – | consent, `client_trxn_id` | Returns a masked email (`ra*****@gmail.com`), masked mobile (`98XXXXXX20`), `otp_start_date`, `otp_end_date`, `otp_expire_time: 300` and `trxn_no`. The OTP is always `123456`. A new OTP resets the wrong-attempt count. | `E-203` more than 5 sends, `GW-005` no eIA check yet |
 | `verify_otp` | `otp_no: string` (6 digits) | `send_otp` | `123456` → `otp_verified: true`. | `E-302` wrong OTP, `E-303` more than 300 s after send, `E-304` locked after 3 wrong attempts, `GW-006` no OTP sent, `GW-004` not 6 digits |
