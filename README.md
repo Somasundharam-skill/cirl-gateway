@@ -82,10 +82,27 @@ and the channel are stored.
 | `check_existing_eia` *(disabled)* | `pan` **or** `uid`, `email_id`, `mobile_no?` | consent | PAN `ABCPE1234E` → `status "true"`, `eia_no "2345678904567"`. Anything else → `status "false"`, `E-102 "eIA Account does not exist."`. Both are successful calls (`eia_exists` true/false). Generates `trxn_no` `C1-` + 17 digits and saves it as `client_trxn_id`. `mobile_no` defaults to the session phone. | `GW-004` bad PAN/UID/email/mobile, or both/neither of PAN and UID. `GW-002` no consent |
 | `send_otp` *(disabled)* | – | consent, `client_trxn_id` | Returns a masked email (`ra*****@gmail.com`), masked mobile (`98XXXXXX20`), `otp_start_date`, `otp_end_date`, `otp_expire_time: 300` and `trxn_no`. The OTP is always `123456`. A new OTP resets the wrong-attempt count. | `E-203` more than 5 sends, `GW-005` no eIA check yet |
 | `verify_otp` *(disabled)* | `otp_no: string` (6 digits) | `send_otp` | `123456` → `otp_verified: true`. | `E-302` wrong OTP, `E-303` more than 300 s after send, `E-304` locked after 3 wrong attempts, `GW-006` no OTP sent, `GW-004` not 6 digits |
-| `send_email_otp` | `email_id: string` | consent | "Emails" the code `MOCK_EMAIL_OTP` (default `123456`), valid 120 s. Stores the email and the expiry time. Returns `{ok, email_id, expires_in_seconds: 120}`. | `GW-002` no consent, `GW-004` invalid email, `GW-010` more than 5 sends, `GW-013` locked |
+| `send_email_otp` | `email_id?: string` | consent | "Emails" the code `MOCK_EMAIL_OTP` (default `123456`), valid 120 s. Stores the email and the expiry time. Returns `{ok, email_id, expires_in_seconds: 120, message_for_customer}`. On a resend, `email_id` can be omitted and the stored email is reused. | `GW-002` no consent, `GW-004` invalid email (or omitted with none stored), `GW-010` more than 5 sends, `GW-013` locked |
 | `verify_email_otp` | `otp_no: string` (6 digits) | `send_email_otp` | The correct code → `email_verified: true`. | `GW-011` wrong code, `GW-012` more than 120 s after send, `GW-013` locked after 3 wrong attempts in total (across resends, for the whole session), `GW-014` no email OTP sent, `GW-002` no consent, `GW-004` not 6 digits |
 
 The email OTP tools are independent of the mobile OTP flow and only need consent.
+
+### `message_for_customer` (email OTP tools)
+
+`send_email_otp` and `verify_email_otp` also return `message_for_customer`: the exact text the agent sends to the customer.
+`isError`, `error_code` and `message_for_agent` are unchanged.
+
+| Tool | Case | `message_for_customer` |
+|---|---|---|
+| `send_email_otp` | success | Great! We've sent an Email Verification Code to {email_id}. Please enter the 6-digit OTP below (Valid for 120 seconds): |
+| `send_email_otp` | `GW-004` invalid or missing email | That doesn't look like a valid email address. Please enter your valid Email ID: |
+| `send_email_otp` | `GW-010` send limit | You've reached the limit for verification codes. Please try again later. |
+| `verify_email_otp` | success (also when already verified) | Email verified! Let's establish your portal access. Please enter a secure password for your new customer account.<br>Criteria:<br>- At least 8 characters<br>- Mixed case & 1 special character |
+| `verify_email_otp` | `GW-011` wrong code, `GW-004` not 6 digits | That code is incorrect. Please re-enter the 6-digit OTP: |
+| `verify_email_otp` | `GW-012` expired | That code has expired. Reply RESEND and I'll send you a new one. |
+| both | `GW-013` locked | Too many incorrect attempts. Please start again later by sending Hi. |
+
+`GW-002`, `GW-014` and `GW-501` have no customer text, so the field is left out. The agent should rely on `message_for_agent` for those.
 
 Other gateway codes: `GW-001` no active journey (never started, or expired), `GW-501` CIRL `real` mode not implemented.
 
@@ -94,7 +111,7 @@ Other gateway codes: `GW-001` no active journey (never started, or expired), `GW
 - Full PAN, UID and OTP values (including the email OTP) are never stored. PAN/UID are used for the single CIRL request and then discarded. No passwords are handled.
 - Every tool call writes one masked audit entry (`timestamp`, `conversation_id`, `tool`, `event`, `input`, `output`, `ok`, `error_code`). It goes to stdout as a JSON line and to an in-memory buffer read by `/admin/audit`.
 - Masking: PAN `ABCXXXX34F`, UID `XXXXXXXX9012`, OTP `******`, phone `+91XXXXXX5820`, email `ra*****@gmail.com`, eIA number last 4 digits only.
-  As a safety net, any PAN-shaped or 12-digit value in any other string field is also masked.
+  As a safety net, any PAN-shaped value, 12-digit value or email address in any other string field (e.g. `message_for_customer`) is also masked.
 - Request bodies, headers and the bearer key are never logged.
 - Sessions and audit entries are kept in memory only, so they are lost on restart. Sessions sit behind the `SessionStore` interface (`app/sessions.py`), so a database-backed store can replace the in-memory one later.
 

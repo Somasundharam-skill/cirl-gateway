@@ -334,6 +334,24 @@ def verify_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
     }, "otp_verified"
 
 
+# message_for_customer: exact text the agent sends to the customer.
+CUSTOMER_EMAIL_OTP_SENT = (
+    "Great! We've sent an Email Verification Code to {email_id}. "
+    "Please enter the 6-digit OTP below (Valid for {expires_in} seconds):"
+)
+CUSTOMER_INVALID_EMAIL = "That doesn't look like a valid email address. Please enter your valid Email ID:"
+CUSTOMER_EMAIL_OTP_SEND_LIMIT = "You've reached the limit for verification codes. Please try again later."
+CUSTOMER_EMAIL_VERIFIED = (
+    "Email verified! Let's establish your portal access. Please enter a secure password for your new customer account.\n"
+    "Criteria:\n"
+    "- At least 8 characters\n"
+    "- Mixed case & 1 special character"
+)
+CUSTOMER_EMAIL_OTP_WRONG = "That code is incorrect. Please re-enter the 6-digit OTP:"
+CUSTOMER_EMAIL_OTP_EXPIRED = "That code has expired. Reply RESEND and I'll send you a new one."
+CUSTOMER_EMAIL_OTP_LOCKED = "Too many incorrect attempts. Please start again later by sending Hi."
+
+
 def _require_email_otp_consent(ctx: ToolContext) -> Session:
     session = ctx.store.get(ctx.conversation_id)
     if session is None or not session.consent_id:
@@ -346,6 +364,7 @@ def _email_otp_locked_error() -> ToolError:
         "GW-013",
         "Email OTP verification locked after 3 wrong attempts.",
         "Tell the customer that email verification is locked for this conversation after 3 wrong codes.",
+        message_for_customer=CUSTOMER_EMAIL_OTP_LOCKED,
     )
 
 
@@ -355,15 +374,24 @@ def send_email_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
         raise _email_otp_locked_error()
 
     email_id = args.get("email_id")
+    if email_id is None or (isinstance(email_id, str) and not email_id.strip()):
+        # Resend: reuse the email from the previous send, if any.
+        email_id = session.email_otp_email_id
     email_id = email_id.strip() if isinstance(email_id, str) else None
     if not email_id or not EMAIL_RE.match(email_id):
-        raise _validation_error("Invalid email_id.", "Ask the customer for a valid email ID.")
+        raise ToolError(
+            "GW-004",
+            "Invalid email_id.",
+            "Ask the customer for a valid email ID.",
+            message_for_customer=CUSTOMER_INVALID_EMAIL,
+        )
 
     if session.email_otp_send_count >= MAX_EMAIL_OTP_SENDS:
         raise ToolError(
             "GW-010",
             "Maximum email OTP send limit reached.",
             "Tell the customer that no more email codes can be sent in this conversation and they should try again later.",
+            message_for_customer=CUSTOMER_EMAIL_OTP_SEND_LIMIT,
         )
 
     response = cirl_client.send_email_otp(ctx.settings, email_id=email_id)
@@ -379,6 +407,7 @@ def send_email_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
         "email_id": email_id,
         "expires_in_seconds": expires_in,
         "message_for_agent": f"A code was emailed to the customer. It is valid for {expires_in} seconds.",
+        "message_for_customer": CUSTOMER_EMAIL_OTP_SENT.format(email_id=email_id, expires_in=expires_in),
     }, "email_otp_sent"
 
 
@@ -391,20 +420,32 @@ def verify_email_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
             "No email code has been sent to the customer yet.",
         )
     if session.email_verified:
-        return {"ok": True, "email_verified": True, "message_for_agent": "Email already verified."}, "email_verified"
+        return {
+            "ok": True,
+            "email_verified": True,
+            "message_for_agent": "Email already verified.",
+            "message_for_customer": CUSTOMER_EMAIL_VERIFIED,
+        }, "email_verified"
     if session.email_otp_failed_attempts >= MAX_EMAIL_OTP_ATTEMPTS:
         raise _email_otp_locked_error()
 
     otp_no = args.get("otp_no")
     otp_no = otp_no.strip() if isinstance(otp_no, str) else None
     if not otp_no or not OTP_RE.match(otp_no):
-        raise _validation_error("otp_no must be 6 digits.", "Ask the customer to enter the 6-digit code from their email.")
+        # Not 6 digits: ask again without using up an attempt.
+        raise ToolError(
+            "GW-004",
+            "otp_no must be 6 digits.",
+            "Ask the customer to enter the 6-digit code from their email.",
+            message_for_customer=CUSTOMER_EMAIL_OTP_WRONG,
+        )
 
     if clock.now() > session.email_otp_expires_at:
         raise ToolError(
             "GW-012",
             "Email OTP has expired.",
             "Tell the customer the code has expired and offer to send a new one.",
+            message_for_customer=CUSTOMER_EMAIL_OTP_EXPIRED,
         )
 
     response = cirl_client.verify_email_otp(ctx.settings, email_id=session.email_otp_email_id, otp_no=otp_no)
@@ -420,6 +461,7 @@ def verify_email_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
             "Incorrect email OTP.",
             "Tell the customer the code is incorrect and ask them to re-enter it.",
             attempts_remaining=MAX_EMAIL_OTP_ATTEMPTS - session.email_otp_failed_attempts,
+            message_for_customer=CUSTOMER_EMAIL_OTP_WRONG,
         )
 
     session.email_verified = True
@@ -428,6 +470,7 @@ def verify_email_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
         "ok": True,
         "email_verified": True,
         "message_for_agent": "Email verified.",
+        "message_for_customer": CUSTOMER_EMAIL_VERIFIED,
     }, "email_verified"
 
 
@@ -506,15 +549,25 @@ TOOLS: dict[str, Tool] = {
             "send_email_otp",
             "Emails a one-time code to the customer's email address to verify it. "
             "Call this after consent is recorded, once the customer has given their email ID, or when they ask "
-            "for a new email code. Max 5 per journey; the code is valid for 120 seconds.",
-            _schema({"email_id": {"type": "string", "description": "Customer's email address."}}, ["email_id"]),
+            "for a new email code (omit email_id to resend to the same address). "
+            "Max 5 per journey; the code is valid for 120 seconds. "
+            "Send message_for_customer to the customer exactly as given.",
+            _schema(
+                {
+                    "email_id": {
+                        "type": "string",
+                        "description": "Customer's email address. Omit on a resend to reuse the previous address.",
+                    }
+                }
+            ),
             send_email_otp,
         ),
         Tool(
             "verify_email_otp",
             "Verifies the code the customer received by email. "
             "Call this when the customer replies with the 6-digit email code after send_email_otp. "
-            "Locks after 3 wrong attempts in total, including across resends.",
+            "Locks after 3 wrong attempts in total, including across resends. "
+            "Send message_for_customer to the customer exactly as given.",
             _schema(
                 {"otp_no": {"type": "string", "description": "The 6-digit code from the customer's email."}}, ["otp_no"]
             ),

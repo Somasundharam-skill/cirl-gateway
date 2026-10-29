@@ -192,3 +192,131 @@ def test_email_otp_audit_is_masked(client, app, captured_logs):
         assert "654321" not in text
     stored = repr(app.state.store.get("conv-test-1"))
     assert "123456" not in stored and "654321" not in stored
+
+
+# --- message_for_customer --------------------------------------------------------------
+
+SENT_TEXT = (
+    "Great! We've sent an Email Verification Code to rahul@gmail.com. "
+    "Please enter the 6-digit OTP below (Valid for 120 seconds):"
+)
+VERIFIED_TEXT = (
+    "Email verified! Let's establish your portal access. Please enter a secure password for your new customer account.\n"
+    "Criteria:\n- At least 8 characters\n- Mixed case & 1 special character"
+)
+INVALID_EMAIL_TEXT = "That doesn't look like a valid email address. Please enter your valid Email ID:"
+SEND_LIMIT_TEXT = "You've reached the limit for verification codes. Please try again later."
+WRONG_TEXT = "That code is incorrect. Please re-enter the 6-digit OTP:"
+EXPIRED_TEXT = "That code has expired. Reply RESEND and I'll send you a new one."
+LOCKED_TEXT = "Too many incorrect attempts. Please start again later by sending Hi."
+
+
+def test_customer_text_send_success(client):
+    start_to_consent(client)
+    result, payload = send(client)
+    assert result["isError"] is False
+    assert payload["message_for_customer"] == SENT_TEXT
+    assert payload["message_for_agent"]
+
+
+def test_customer_text_invalid_email(client):
+    start_to_consent(client)
+    result, payload = send(client, "not-an-email")
+    assert_tool_error(result, payload, "GW-004", "Ask the customer for a valid email ID.")
+    assert payload["message_for_customer"] == INVALID_EMAIL_TEXT
+
+
+def test_customer_text_send_limit(client):
+    start_to_consent(client)
+    for _ in range(5):
+        send(client)
+    result, payload = send(client)
+    assert_tool_error(result, payload, "GW-010")
+    assert payload["message_for_customer"] == SEND_LIMIT_TEXT
+
+
+def test_resend_without_email_reuses_stored_email(client, app):
+    start_to_consent(client)
+    send(client)
+    for args in ({}, {"email_id": ""}):
+        result, payload = call(client, "send_email_otp", args)
+        assert result["isError"] is False
+        assert payload["email_id"] == EMAIL
+        assert payload["message_for_customer"] == SENT_TEXT
+    assert app.state.store.get("conv-test-1").email_otp_send_count == 3
+
+
+def test_resend_with_new_email_replaces_stored_email(client, app):
+    start_to_consent(client)
+    send(client)
+    _, payload = send(client, "priya@example.com")
+    assert payload["email_id"] == "priya@example.com"
+    _, payload = call(client, "send_email_otp", {})
+    assert payload["email_id"] == "priya@example.com"
+
+
+def test_first_send_without_email_is_invalid(client):
+    start_to_consent(client)
+    result, payload = call(client, "send_email_otp", {})
+    assert_tool_error(result, payload, "GW-004")
+    assert payload["message_for_customer"] == INVALID_EMAIL_TEXT
+
+
+def test_customer_text_verify_success(client):
+    start_to_consent(client)
+    send(client)
+    result, payload = verify(client, "123456")
+    assert result["isError"] is False
+    assert payload["message_for_customer"] == VERIFIED_TEXT
+    _, payload = verify(client, "123456")  # already verified
+    assert payload["message_for_customer"] == VERIFIED_TEXT
+
+
+def test_customer_text_wrong_code(client):
+    start_to_consent(client)
+    send(client)
+    result, payload = verify(client, "000000")
+    assert_tool_error(result, payload, "GW-011")
+    assert payload["message_for_customer"] == WRONG_TEXT
+    # Not 6 digits: same customer text, no attempt used.
+    result, payload = verify(client, "12ab")
+    assert_tool_error(result, payload, "GW-004")
+    assert payload["message_for_customer"] == WRONG_TEXT
+    _, payload = verify(client, "000001")
+    assert payload["attempts_remaining"] == 1
+
+
+def test_customer_text_expired(client, fake_clock):
+    start_to_consent(client)
+    send(client)
+    fake_clock.advance(121)
+    result, payload = verify(client, "123456")
+    assert_tool_error(result, payload, "GW-012")
+    assert payload["message_for_customer"] == EXPIRED_TEXT
+
+
+def test_customer_text_locked(client):
+    start_to_consent(client)
+    send(client)
+    verify(client, "000000")
+    verify(client, "000001")
+    for result, payload in (verify(client, "000002"), verify(client, "123456"), send(client), call(client, "send_email_otp", {})):
+        assert_tool_error(result, payload, "GW-013")
+        assert payload["message_for_customer"] == LOCKED_TEXT
+
+
+def test_no_customer_text_where_none_is_defined(client):
+    result, payload = send(client)  # GW-002, no consent
+    assert_tool_error(result, payload, "GW-002")
+    assert "message_for_customer" not in payload
+    start_to_consent(client)
+    result, payload = verify(client, "123456")  # GW-014, nothing sent
+    assert_tool_error(result, payload, "GW-014")
+    assert "message_for_customer" not in payload
+
+
+def test_customer_text_email_is_masked_in_audit(client):
+    start_to_consent(client)
+    send(client)
+    entry = client.get("/admin/audit", headers=headers()).json()["entries"][-1]
+    assert entry["output"]["message_for_customer"] == SENT_TEXT.replace("rahul@gmail.com", "ra*****@gmail.com")

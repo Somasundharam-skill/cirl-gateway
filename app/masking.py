@@ -10,6 +10,7 @@ from typing import Any
 
 _PAN_ANYWHERE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]{5}[0-9]{4}[A-Za-z](?![A-Za-z0-9])")
 _TWELVE_DIGITS = re.compile(r"(?<!\d)\d{12}(?!\d)")
+_EMAIL_ANYWHERE = re.compile(r"[^\s@*]+@[^\s@]+\.[A-Za-z]{2,}")
 
 
 def mask_pan(pan: Any) -> str:
@@ -68,6 +69,7 @@ _KEY_MASKERS = {
 
 def scrub_text(text: str) -> str:
     text = _PAN_ANYWHERE.sub(lambda m: mask_pan(m.group(0)), text)
+    text = _EMAIL_ANYWHERE.sub(lambda m: mask_email(m.group(0)), text)
     return _TWELVE_DIGITS.sub(lambda m: mask_uid(m.group(0)), text)
 
 
