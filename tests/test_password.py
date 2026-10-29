@@ -65,13 +65,15 @@ def session(app):
 def test_link_requires_verified_email(client):
     result, payload = call(client, "create_password_link")  # no session
     assert result["isError"] is True and payload["error_code"] == "GW-020"
-    assert payload["message_for_customer"] == "Please verify your email first."
+    assert payload["message_for_agent"] == "Not available yet. Continue with the current step."
+    assert "message_for_customer" not in payload
 
     start_to_consent(client)
     call(client, "send_email_otp", {"email_id": "rahul@gmail.com"})
     result, payload = call(client, "create_password_link")  # sent, not verified
     assert result["isError"] is True and payload["error_code"] == "GW-020"
-    assert payload["message_for_customer"] == "Please verify your email first."
+    assert payload["message_for_agent"] == "Not available yet. Continue with the current step."
+    assert "message_for_customer" not in payload
 
 
 def test_link_shape(client, app):

@@ -9,6 +9,7 @@ from tests.conftest import API_KEY, call, headers, start_to_consent
 from tests.test_privacy import assert_clean
 
 EMAIL = "rahul@gmail.com"
+NOT_AVAILABLE = "Not available yet. Continue with the current step."
 
 
 def assert_tool_error(result, payload, code, message_for_agent=None):
@@ -22,6 +23,12 @@ def send(client, email=EMAIL):
     return call(client, "send_email_otp", {"email_id": email})
 
 
+def resend_later(client, fake_clock, args=None):
+    """A real resend: past the 30-second cooldown (and still within the 120-second validity)."""
+    fake_clock.advance(30)
+    return call(client, "send_email_otp", {"email_id": EMAIL} if args is None else args)
+
+
 def verify(client, otp):
     return call(client, "verify_email_otp", {"otp_no": otp})
 
@@ -31,10 +38,10 @@ def verify(client, otp):
 
 def test_send_requires_consent(client):
     result, payload = send(client)  # no session at all
-    assert_tool_error(result, payload, "GW-002", "Ask the customer for consent first.")
+    assert_tool_error(result, payload, "GW-002", NOT_AVAILABLE)
     call(client, "start_journey")
     result, payload = send(client)
-    assert_tool_error(result, payload, "GW-002", "Ask the customer for consent first.")
+    assert_tool_error(result, payload, "GW-002", NOT_AVAILABLE)
 
 
 def test_send_refused_after_consent_refused(client):
@@ -63,12 +70,12 @@ def test_send_success(client, app):
     assert session.email_otp_expires_at is not None
 
 
-def test_send_limit(client):
+def test_send_limit(client, fake_clock):
     start_to_consent(client)
     for _ in range(5):
-        result, _ = send(client)
+        result, _ = resend_later(client, fake_clock)
         assert result["isError"] is False
-    result, payload = send(client)
+    result, payload = resend_later(client, fake_clock)
     assert_tool_error(result, payload, "GW-010")
 
 
@@ -223,20 +230,20 @@ def test_customer_text_invalid_email(client):
     assert payload["message_for_customer"] == INVALID_EMAIL_TEXT
 
 
-def test_customer_text_send_limit(client):
+def test_customer_text_send_limit(client, fake_clock):
     start_to_consent(client)
     for _ in range(5):
-        send(client)
-    result, payload = send(client)
+        resend_later(client, fake_clock)
+    result, payload = resend_later(client, fake_clock)
     assert_tool_error(result, payload, "GW-010")
     assert payload["message_for_customer"] == SEND_LIMIT_TEXT
 
 
-def test_resend_without_email_reuses_stored_email(client, app):
+def test_resend_without_email_reuses_stored_email(client, app, fake_clock):
     start_to_consent(client)
     send(client)
     for args in ({}, {"email_id": ""}):
-        result, payload = call(client, "send_email_otp", args)
+        result, payload = resend_later(client, fake_clock, args)
         assert result["isError"] is False
         assert payload["email_id"] == EMAIL
         assert payload["message_for_customer"] == SENT_TEXT
@@ -317,3 +324,128 @@ def test_customer_text_email_is_masked_in_audit(client):
     send(client)
     entry = client.get("/admin/audit", headers=headers()).json()["entries"][-1]
     assert entry["output"]["message_for_customer"] == SENT_TEXT.replace("rahul@gmail.com", "ra*****@gmail.com")
+
+
+# --- called too early: neutral agent text, no customer text -----------------------------
+
+
+def test_preconditions_have_no_customer_text(client):
+    def check(tool, args, code):
+        result, payload = call(client, tool, args)
+        assert_tool_error(result, payload, code, NOT_AVAILABLE)
+        assert "message_for_customer" not in payload, tool
+
+    # No session yet
+    check("send_email_otp", {"email_id": EMAIL}, "GW-002")
+    check("create_password_link", {}, "GW-020")
+    # Journey started, no consent
+    call(client, "start_journey")
+    check("send_email_otp", {"email_id": EMAIL}, "GW-002")
+    check("verify_email_otp", {"otp_no": "123456"}, "GW-002")
+    check("check_existing_eia", {"pan": "ABCPE1234E", "email_id": EMAIL}, "GW-002")
+    check("create_password_link", {}, "GW-020")
+    check("check_password_status", {}, "GW-023")
+    # Consent recorded
+    call(client, "record_consent", {"consent": True, "notice_version": "v1.0"})
+    check("verify_email_otp", {"otp_no": "123456"}, "GW-014")
+    check("send_otp", {}, "GW-005")
+    check("create_password_link", {}, "GW-020")
+    # Code sent, not verified yet
+    send(client)
+    check("create_password_link", {}, "GW-020")
+    # eIA checked, no OTP sent
+    call(client, "check_existing_eia", {"pan": "ABCPE1234E", "email_id": EMAIL})
+    check("verify_otp", {"otp_no": "123456"}, "GW-006")
+
+
+# --- send_email_otp 30-second cooldown ---------------------------------------------------
+
+
+def audit_events(client):
+    return [e["event"] for e in client.get("/admin/audit", headers=headers()).json()["entries"]]
+
+
+def test_duplicate_send_within_30s_is_ignored(client, app, fake_clock):
+    start_to_consent(client)
+    first_result, first = send(client)
+    session = app.state.store.get("conv-test-1")
+
+    fake_clock.advance(29)
+    for args in ({"email_id": EMAIL}, {}):  # explicit email, or the resend form
+        result, payload = call(client, "send_email_otp", args)
+        assert result == first_result
+        assert payload == first and payload["ok"] is True
+        assert payload["message_for_customer"] == SENT_TEXT
+
+    after = app.state.store.get("conv-test-1")
+    assert after.email_otp_send_count == 1  # not counted
+    assert after.email_otp_sent_at == session.email_otp_sent_at  # no new code
+    assert after.email_otp_expires_at == session.email_otp_expires_at
+    assert audit_events(client)[-3:] == ["email_otp_sent", "email_otp_duplicate_ignored", "email_otp_duplicate_ignored"]
+
+
+def test_duplicate_is_not_sent_to_cirl(client, monkeypatch):
+    from app import cirl_client
+
+    calls = []
+    real = cirl_client.send_email_otp
+    monkeypatch.setattr(cirl_client, "send_email_otp", lambda *a, **kw: calls.append(1) or real(*a, **kw))
+    start_to_consent(client)
+    send(client)
+    send(client)
+    assert len(calls) == 1
+
+
+def test_send_after_30s_is_a_new_send(client, app, fake_clock):
+    start_to_consent(client)
+    send(client)
+    fake_clock.advance(30)
+    result, payload = send(client)
+    assert result["isError"] is False and payload["message_for_customer"] == SENT_TEXT
+    assert app.state.store.get("conv-test-1").email_otp_send_count == 2
+    assert audit_events(client)[-1] == "email_otp_sent"
+
+
+def test_send_to_different_email_within_30s_is_a_new_send(client, app):
+    start_to_consent(client)
+    send(client)
+    _, payload = send(client, "priya@example.com")
+    assert payload["email_id"] == "priya@example.com"
+    assert app.state.store.get("conv-test-1").email_otp_send_count == 2
+    assert audit_events(client)[-1] == "email_otp_sent"
+
+
+def test_send_after_expiry_is_a_new_send(client, app, fake_clock, monkeypatch):
+    # The cooldown applies only while the code is still valid.
+    from app import cirl_client
+
+    real = cirl_client.send_email_otp
+    monkeypatch.setattr(cirl_client, "send_email_otp", lambda *a, **kw: {**real(*a, **kw), "expires_in_seconds": 10})
+    start_to_consent(client)
+    send(client)
+    fake_clock.advance(11)  # expired, though less than 30 s ago
+    send(client)
+    assert app.state.store.get("conv-test-1").email_otp_send_count == 2
+    assert audit_events(client)[-1] == "email_otp_sent"
+
+
+def test_duplicates_do_not_use_up_the_send_limit(client, app, fake_clock):
+    start_to_consent(client)
+    for _ in range(5):
+        resend_later(client, fake_clock)
+        result, _ = send(client)  # immediate repeat: ignored
+        assert result["isError"] is False
+    assert app.state.store.get("conv-test-1").email_otp_send_count == 5
+    result, payload = resend_later(client, fake_clock)
+    assert_tool_error(result, payload, "GW-010")
+
+
+def test_duplicate_keeps_attempt_count_and_code(client, app):
+    # An ignored duplicate resets nothing: the first code still verifies.
+    start_to_consent(client)
+    send(client)
+    assert_tool_error(*verify(client, "000000"), "GW-011")
+    send(client)
+    assert app.state.store.get("conv-test-1").email_otp_failed_attempts == 1
+    result, _ = verify(client, "123456")
+    assert result["isError"] is False

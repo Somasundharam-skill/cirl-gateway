@@ -25,6 +25,11 @@ MAX_OTP_SENDS = 5
 MAX_OTP_ATTEMPTS = 3
 MAX_EMAIL_OTP_SENDS = 5
 MAX_EMAIL_OTP_ATTEMPTS = 3
+EMAIL_OTP_RESEND_COOLDOWN_SECONDS = 30
+
+# Returned when a tool is called before its step is reached. It is deliberately
+# neutral and has no message_for_customer, so the agent doesn't relay it.
+NOT_AVAILABLE_YET = "Not available yet. Continue with the current step."
 
 
 @dataclass
@@ -65,6 +70,11 @@ def _validation_error(error_msg: str, message_for_agent: str) -> ToolError:
     return ToolError("GW-004", error_msg, message_for_agent)
 
 
+def _too_early(error_code: str, error_msg: str) -> ToolError:
+    """A precondition failure: the tool was called before its step."""
+    return ToolError(error_code, error_msg, NOT_AVAILABLE_YET)
+
+
 def _opt_str(args: dict, key: str) -> str | None:
     value = args.get(key)
     if value is None:
@@ -89,11 +99,7 @@ def _require_session(ctx: ToolContext) -> Session:
 def _require_consent(ctx: ToolContext) -> Session:
     session = _require_session(ctx)
     if not session.consent_id:
-        raise ToolError(
-            "GW-002",
-            "Customer consent has not been recorded.",
-            "Ask the customer for consent first.",
-        )
+        raise _too_early("GW-002", "Customer consent has not been recorded.")
     return session
 
 
@@ -251,11 +257,7 @@ def check_existing_eia(ctx: ToolContext, args: dict) -> tuple[dict, str]:
 def send_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
     session = _require_consent(ctx)
     if not session.client_trxn_id:
-        raise ToolError(
-            "GW-005",
-            "No eIA check has been done in this journey.",
-            "The customer's eIA details have not been checked yet.",
-        )
+        raise _too_early("GW-005", "No eIA check has been done in this journey.")
     if session.otp_send_count >= MAX_OTP_SENDS:
         raise ToolError(
             "E-203",
@@ -289,7 +291,7 @@ def verify_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
 
     session = _require_consent(ctx)
     if session.otp_sent_at is None:
-        raise ToolError("GW-006", "No OTP has been sent.", "No OTP has been sent to the customer yet.")
+        raise _too_early("GW-006", "No OTP has been sent.")
     if session.otp_verified:
         return {"ok": True, "otp_verified": True, "message_for_agent": "OTP already verified."}, "otp_verified"
 
@@ -353,7 +355,7 @@ CUSTOMER_EMAIL_OTP_LOCKED = "Too many incorrect attempts. Please start again lat
 def _require_email_otp_consent(ctx: ToolContext) -> Session:
     session = ctx.store.get(ctx.conversation_id)
     if session is None or not session.consent_id:
-        raise ToolError("GW-002", "Customer consent has not been recorded.", "Ask the customer for consent first.")
+        raise _too_early("GW-002", "Customer consent has not been recorded.")
     return session
 
 
@@ -384,6 +386,19 @@ def send_email_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
             message_for_customer=CUSTOMER_INVALID_EMAIL,
         )
 
+    now = clock.now()
+    if (
+        email_id == session.email_otp_email_id
+        and session.email_otp_sent_at is not None
+        and now - session.email_otp_sent_at < EMAIL_OTP_RESEND_COOLDOWN_SECONDS
+        and now <= session.email_otp_expires_at
+    ):
+        # Repeat call right after a send (e.g. the agent retried): the customer already
+        # has a valid code, so don't send another or count it. Return the same result.
+        return _email_otp_sent_result(email_id, session.email_otp_expires_at - session.email_otp_sent_at), (
+            "email_otp_duplicate_ignored"
+        )
+
     if session.email_otp_send_count >= MAX_EMAIL_OTP_SENDS:
         raise ToolError(
             "GW-010",
@@ -397,26 +412,28 @@ def send_email_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
 
     session.email_otp_email_id = email_id
     session.email_otp_send_count += 1
-    session.email_otp_expires_at = clock.now() + expires_in
+    session.email_otp_sent_at = now
+    session.email_otp_expires_at = now + expires_in
     session.email_verified = False
     ctx.store.save(session)
+    return _email_otp_sent_result(email_id, expires_in), "email_otp_sent"
+
+
+def _email_otp_sent_result(email_id: str, expires_in: int | float) -> dict:
+    expires_in = int(expires_in)
     return {
         "ok": True,
         "email_id": email_id,
         "expires_in_seconds": expires_in,
         "message_for_agent": f"A code was emailed to the customer. It is valid for {expires_in} seconds.",
         "message_for_customer": CUSTOMER_EMAIL_OTP_SENT.format(email_id=email_id, expires_in=expires_in),
-    }, "email_otp_sent"
+    }
 
 
 def verify_email_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
     session = _require_email_otp_consent(ctx)
     if session.email_otp_expires_at is None:
-        raise ToolError(
-            "GW-014",
-            "No email OTP has been sent.",
-            "No email code has been sent to the customer yet.",
-        )
+        raise _too_early("GW-014", "No email OTP has been sent.")
     if session.email_verified:
         return {
             "ok": True,
@@ -480,7 +497,6 @@ CUSTOMER_PASSWORD_LINK = (
     "- Mixed case & 1 special character\n\n"
     "Once done, reply DONE here."
 )
-CUSTOMER_VERIFY_EMAIL_FIRST = "Please verify your email first."
 CUSTOMER_PASSWORD_SET = "Your password has been set successfully."
 CUSTOMER_PASSWORD_PENDING = (
     "We haven't received your password yet. Please set it using the secure link, then reply DONE."
@@ -491,14 +507,9 @@ CUSTOMER_PASSWORD_LINK_EXPIRED = "Your secure link has expired. Reply NEW LINK a
 def create_password_link(ctx: ToolContext, args: dict) -> tuple[dict, str]:
     session = ctx.store.get(ctx.conversation_id)
     if session is None or not session.email_verified:
-        raise ToolError(
-            "GW-020",
-            "Email has not been verified.",
-            "The customer's email is not verified yet.",
-            message_for_customer=CUSTOMER_VERIFY_EMAIL_FIRST,
-        )
+        raise _too_early("GW-020", "Email has not been verified.")
     if not session.consent_id:
-        raise ToolError("GW-002", "Customer consent has not been recorded.", "Ask the customer for consent first.")
+        raise _too_early("GW-002", "Customer consent has not been recorded.")
 
     token = password_page.new_token()
     # Replacing the hash invalidates any older unused link for this session.
@@ -530,7 +541,7 @@ def check_password_status(ctx: ToolContext, args: dict) -> tuple[dict, str]:
             "message_for_customer": CUSTOMER_PASSWORD_SET,
         }, "password_status_checked"
     if not session.password_link_hash:
-        raise ToolError("GW-023", "No password link has been created.", "No password link has been sent to the customer yet.")
+        raise _too_early("GW-023", "No password link has been created.")
     if not password_page.link_usable(session):
         raise ToolError(
             "GW-022",

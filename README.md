@@ -68,6 +68,7 @@ python -m pytest
   - Success: `isError: false`, and the JSON has `ok: true` and a neutral `message_for_agent` (e.g. "Consent recorded.").
   - Business failure: `isError: true`, and the JSON has `ok: false`, `error_code`, `error_msg` and `message_for_agent` (what the customer must fix for this tool).
   - `message_for_agent` never names another tool or the next step, because the journey order is decided by Perfox Steps.
+  - A tool called before its step is reached (`GW-002`, `GW-005`, `GW-006`, `GW-014`, `GW-020`, `GW-023`, below) returns `message_for_agent: "Not available yet. Continue with the current step."` and no `message_for_customer`, so the agent has nothing to relay to the customer.
 - JSON-RPC errors are used only for protocol problems: parse error (-32700), invalid request or batch (-32600), unknown method (-32601), unknown tool, bad params or a missing `X-Sa-Conversation-Id` header (-32602).
 
 Headers read on every `tools/call`: `X-Sa-Conversation-Id` (required, the session key), `X-Sa-End-User-Phone`,
@@ -87,7 +88,7 @@ and the channel are stored.
 | `check_existing_eia` *(disabled)* | `pan` **or** `uid`, `email_id`, `mobile_no?` | consent | PAN `ABCPE1234E` → `status "true"`, `eia_no "2345678904567"`. Anything else → `status "false"`, `E-102 "eIA Account does not exist."`. Both are successful calls (`eia_exists` true/false). Generates `trxn_no` `C1-` + 17 digits and saves it as `client_trxn_id`. `mobile_no` defaults to the session phone. | `GW-004` bad PAN/UID/email/mobile, or both/neither of PAN and UID. `GW-002` no consent |
 | `send_otp` *(disabled)* | – | consent, `client_trxn_id` | Returns a masked email (`ra*****@gmail.com`), masked mobile (`98XXXXXX20`), `otp_start_date`, `otp_end_date`, `otp_expire_time: 300` and `trxn_no`. The OTP is always `123456`. A new OTP resets the wrong-attempt count. | `E-203` more than 5 sends, `GW-005` no eIA check yet |
 | `verify_otp` *(disabled)* | `otp_no: string` (6 digits) | `send_otp` | `123456` → `otp_verified: true`. | `E-302` wrong OTP, `E-303` more than 300 s after send, `E-304` locked after 3 wrong attempts, `GW-006` no OTP sent, `GW-004` not 6 digits |
-| `send_email_otp` | `email_id?: string` | consent | "Emails" the code `MOCK_EMAIL_OTP` (default `123456`), valid 120 s. Stores the email and the expiry time. Returns `{ok, email_id, expires_in_seconds: 120, message_for_customer}`. On a resend, `email_id` can be omitted and the stored email is reused. | `GW-002` no consent, `GW-004` invalid email (or omitted with none stored), `GW-010` more than 5 sends, `GW-013` locked |
+| `send_email_otp` | `email_id?: string` | consent | "Emails" the code `MOCK_EMAIL_OTP` (default `123456`), valid 120 s. Stores the email and the expiry time. Returns `{ok, email_id, expires_in_seconds: 120, message_for_customer}`. On a resend, `email_id` can be omitted and the stored email is reused. A repeat call for the same email within 30 s of a send, while that code is still valid, sends nothing and returns the same success result; it doesn't count towards the 5-send limit and is audited as `email_otp_duplicate_ignored`. | `GW-002` no consent, `GW-004` invalid email (or omitted with none stored), `GW-010` more than 5 sends, `GW-013` locked |
 | `verify_email_otp` | `otp_no: string` (6 digits) | `send_email_otp` | The correct code → `email_verified: true`. | `GW-011` wrong code, `GW-012` more than 120 s after send, `GW-013` locked after 3 wrong attempts in total (across resends, for the whole session), `GW-014` no email OTP sent, `GW-002` no consent, `GW-004` not 6 digits |
 | `create_password_link` | – | `email_verified` | Creates a one-time link `{PUBLIC_BASE_URL}/set-password?t=<token>`, valid 10 minutes. Only the SHA-256 of the token is stored. A new link invalidates any older unused one. Returns `{ok, url, expires_in_seconds: 600, message_for_customer}`. | `GW-020` email not verified, `GW-002` no consent |
 | `check_password_status` | – | session | Password set on the page → `{ok, password_set: true}`. | `GW-021` not set yet (link still valid), `GW-022` link expired or used up, `GW-023` no link created yet |
@@ -109,12 +110,11 @@ The email OTP tools are independent of the mobile OTP flow and only need consent
 | `verify_email_otp` | `GW-012` expired | That code has expired. Reply RESEND and I'll send you a new one. |
 | both email tools | `GW-013` locked | Too many incorrect attempts. Please start again later by sending Hi. |
 | `create_password_link` | success | Let's set up your portal password. For your security, please set it on this secure page (link valid for 10 minutes):<br>{url}<br><br>\*Criteria:\*<br>- At least 8 characters<br>- Mixed case & 1 special character<br><br>Once done, reply DONE here. |
-| `create_password_link` | `GW-020` email not verified | Please verify your email first. |
 | `check_password_status` | success | Your password has been set successfully. |
 | `check_password_status` | `GW-021` not set yet | We haven't received your password yet. Please set it using the secure link, then reply DONE. |
 | `check_password_status` | `GW-022` link expired | Your secure link has expired. Reply NEW LINK and I'll send you a fresh one. |
 
-`GW-002`, `GW-014`, `GW-023` and `GW-501` have no customer text, so the field is left out. The agent should rely on `message_for_agent` for those.
+`GW-002`, `GW-005`, `GW-006`, `GW-014`, `GW-020`, `GW-023` (called too early) and `GW-501` have no customer text, so the field is left out. The agent should rely on `message_for_agent` for those.
 
 Other gateway codes: `GW-001` no active journey (never started, or expired), `GW-501` CIRL `real` mode not implemented.
 
