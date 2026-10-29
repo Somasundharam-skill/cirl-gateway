@@ -69,6 +69,8 @@ if ($toolNames -contains "check_existing_eia") {
 
 # Email OTP (mock code = MOCK_EMAIL_OTP, default 123456)
 Invoke-Tool "send_email_otp" @{ email_id = "rahul@gmail.com" }
+Invoke-Tool "send_email_otp" @{ email_id = "rahul@gmail.com" }   # code still valid -> same result, nothing sent
+Invoke-Tool "send_email_otp" @{ resend = $true }                 # customer asked for a new code -> fresh send
 Invoke-Tool "verify_email_otp" @{ otp_no = "000000" }   # wrong code -> isError GW-011
 Invoke-Tool "verify_email_otp" @{ otp_no = "123456" }
 

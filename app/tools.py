@@ -25,7 +25,6 @@ MAX_OTP_SENDS = 5
 MAX_OTP_ATTEMPTS = 3
 MAX_EMAIL_OTP_SENDS = 5
 MAX_EMAIL_OTP_ATTEMPTS = 3
-EMAIL_OTP_RESEND_COOLDOWN_SECONDS = 30
 
 # Returned when a tool is called before its step is reached. It is deliberately
 # neutral and has no message_for_customer, so the agent doesn't relay it.
@@ -373,10 +372,17 @@ def send_email_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
     if session.email_otp_failed_attempts >= MAX_EMAIL_OTP_ATTEMPTS:
         raise _email_otp_locked_error()
 
+    resend = args.get("resend", False)
+    if not isinstance(resend, bool):
+        raise _validation_error("resend must be true or false.", "Call again with resend true or false.")
+
     email_id = args.get("email_id")
-    if email_id is None or (isinstance(email_id, str) and not email_id.strip()):
-        # Resend: reuse the email from the previous send, if any.
+    if (resend and session.email_otp_email_id) or email_id is None or (
+        isinstance(email_id, str) and not email_id.strip()
+    ):
+        # resend=true, or no email given: use the email already stored in the session.
         email_id = session.email_otp_email_id
+    # Kept exactly as the customer entered it (only surrounding spaces removed); the audit masks it.
     email_id = email_id.strip() if isinstance(email_id, str) else None
     if not email_id or not EMAIL_RE.match(email_id):
         raise ToolError(
@@ -388,16 +394,17 @@ def send_email_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
 
     now = clock.now()
     if (
-        email_id == session.email_otp_email_id
+        not resend
+        and session.email_otp_email_id is not None
+        and email_id.casefold() == session.email_otp_email_id.casefold()
         and session.email_otp_sent_at is not None
-        and now - session.email_otp_sent_at < EMAIL_OTP_RESEND_COOLDOWN_SECONDS
         and now <= session.email_otp_expires_at
     ):
-        # Repeat call right after a send (e.g. the agent retried): the customer already
-        # has a valid code, so don't send another or count it. Return the same result.
-        return _email_otp_sent_result(email_id, session.email_otp_expires_at - session.email_otp_sent_at), (
-            "email_otp_duplicate_ignored"
-        )
+        # The customer already has an unexpired code for this email (e.g. the agent called
+        # again): don't send another or count it. Return the same result as that send.
+        return _email_otp_sent_result(
+            session.email_otp_email_id, session.email_otp_expires_at - session.email_otp_sent_at
+        ), "email_otp_duplicate_ignored"
 
     if session.email_otp_send_count >= MAX_EMAIL_OTP_SENDS:
         raise ToolError(
@@ -687,16 +694,22 @@ TOOLS: dict[str, Tool] = {
         Tool(
             "send_email_otp",
             "Emails a one-time code to the customer's email address to verify it. "
-            "Call this after consent is recorded, once the customer has given their email ID, or when they ask "
-            "for a new email code (omit email_id to resend to the same address). "
-            "Max 5 per journey; the code is valid for 120 seconds. "
+            "Call this after consent is recorded, once the customer has given their email ID, or with resend=true "
+            "when they ask for a new email code. While a code for the same email is still valid, a repeat call "
+            "without resend sends nothing and returns the same result. "
+            "Max 5 sends per journey; the code is valid for 120 seconds. "
             "Send message_for_customer to the customer exactly as given.",
             _schema(
                 {
                     "email_id": {
                         "type": "string",
-                        "description": "Customer's email address. Omit on a resend to reuse the previous address.",
-                    }
+                        "description": "Customer's email address, as they typed it. Not needed with resend=true.",
+                    },
+                    "resend": {
+                        "type": "boolean",
+                        "description": "true when the customer asks for a new code: always sends a fresh code to "
+                        "the email already given. Default false.",
+                    },
                 }
             ),
             send_email_otp,

@@ -23,10 +23,9 @@ def send(client, email=EMAIL):
     return call(client, "send_email_otp", {"email_id": email})
 
 
-def resend_later(client, fake_clock, args=None):
-    """A real resend: past the 30-second cooldown (and still within the 120-second validity)."""
-    fake_clock.advance(30)
-    return call(client, "send_email_otp", {"email_id": EMAIL} if args is None else args)
+def resend(client, args=None):
+    """The customer asked for a new code: always a fresh send."""
+    return call(client, "send_email_otp", {"resend": True} if args is None else args)
 
 
 def verify(client, otp):
@@ -70,12 +69,13 @@ def test_send_success(client, app):
     assert session.email_otp_expires_at is not None
 
 
-def test_send_limit(client, fake_clock):
+def test_send_limit(client):
     start_to_consent(client)
-    for _ in range(5):
-        result, _ = resend_later(client, fake_clock)
+    send(client)
+    for _ in range(4):
+        result, _ = resend(client)
         assert result["isError"] is False
-    result, payload = resend_later(client, fake_clock)
+    result, payload = resend(client)
     assert_tool_error(result, payload, "GW-010")
 
 
@@ -230,33 +230,59 @@ def test_customer_text_invalid_email(client):
     assert payload["message_for_customer"] == INVALID_EMAIL_TEXT
 
 
-def test_customer_text_send_limit(client, fake_clock):
+def test_customer_text_send_limit(client):
     start_to_consent(client)
-    for _ in range(5):
-        resend_later(client, fake_clock)
-    result, payload = resend_later(client, fake_clock)
+    send(client)
+    for _ in range(4):
+        resend(client)
+    result, payload = resend(client)
     assert_tool_error(result, payload, "GW-010")
     assert payload["message_for_customer"] == SEND_LIMIT_TEXT
 
 
-def test_resend_without_email_reuses_stored_email(client, app, fake_clock):
+def test_resend_uses_stored_email(client, app):
     start_to_consent(client)
     send(client)
-    for args in ({}, {"email_id": ""}):
-        result, payload = resend_later(client, fake_clock, args)
+    # resend=true uses the stored email, even if another one is passed.
+    for args in ({"resend": True}, {"resend": True, "email_id": ""}, {"resend": True, "email_id": "x@y.com"}):
+        result, payload = resend(client, args)
         assert result["isError"] is False
         assert payload["email_id"] == EMAIL
         assert payload["message_for_customer"] == SENT_TEXT
-    assert app.state.store.get("conv-test-1").email_otp_send_count == 3
+    assert app.state.store.get("conv-test-1").email_otp_send_count == 4
 
 
-def test_resend_with_new_email_replaces_stored_email(client, app):
+def test_send_without_email_after_expiry_reuses_stored_email(client, app, fake_clock):
+    start_to_consent(client)
+    send(client)
+    fake_clock.advance(121)
+    for args in ({}, {"email_id": ""}):
+        result, payload = call(client, "send_email_otp", args)
+        assert result["isError"] is False and payload["email_id"] == EMAIL
+    assert app.state.store.get("conv-test-1").email_otp_send_count == 2  # second {} is a duplicate
+
+
+def test_new_email_replaces_stored_email(client, app):
     start_to_consent(client)
     send(client)
     _, payload = send(client, "priya@example.com")
     assert payload["email_id"] == "priya@example.com"
-    _, payload = call(client, "send_email_otp", {})
+    _, payload = resend(client)
     assert payload["email_id"] == "priya@example.com"
+    assert app.state.store.get("conv-test-1").email_otp_send_count == 3
+
+
+def test_first_resend_without_stored_email_uses_given_email(client):
+    start_to_consent(client)
+    result, payload = call(client, "send_email_otp", {"resend": True, "email_id": EMAIL})
+    assert result["isError"] is False and payload["email_id"] == EMAIL
+
+
+@pytest.mark.parametrize("value", ["yes", 1, None])
+def test_resend_must_be_boolean(client, value):
+    start_to_consent(client)
+    result, payload = call(client, "send_email_otp", {"email_id": EMAIL, "resend": value})
+    assert_tool_error(result, payload, "GW-004")
 
 
 def test_first_send_without_email_is_invalid(client):
@@ -358,30 +384,44 @@ def test_preconditions_have_no_customer_text(client):
     check("verify_otp", {"otp_no": "123456"}, "GW-006")
 
 
-# --- send_email_otp 30-second cooldown ---------------------------------------------------
+# --- duplicate sends while a code is still valid ------------------------------------------
 
 
 def audit_events(client):
     return [e["event"] for e in client.get("/admin/audit", headers=headers()).json()["entries"]]
 
 
-def test_duplicate_send_within_30s_is_ignored(client, app, fake_clock):
+def test_duplicate_while_code_valid_is_ignored(client, app, fake_clock):
     start_to_consent(client)
     first_result, first = send(client)
     session = app.state.store.get("conv-test-1")
 
-    fake_clock.advance(29)
-    for args in ({"email_id": EMAIL}, {}):  # explicit email, or the resend form
-        result, payload = call(client, "send_email_otp", args)
-        assert result == first_result
-        assert payload == first and payload["ok"] is True
-        assert payload["message_for_customer"] == SENT_TEXT
+    for seconds in (1, 60, 58):  # up to 119 s: still valid
+        fake_clock.advance(seconds)
+        for args in ({"email_id": EMAIL}, {}, {"email_id": EMAIL.upper()}, {"resend": False}):
+            result, payload = call(client, "send_email_otp", args)
+            assert result == first_result, args
+            assert payload["ok"] is True and payload["message_for_customer"] == SENT_TEXT
 
     after = app.state.store.get("conv-test-1")
     assert after.email_otp_send_count == 1  # not counted
     assert after.email_otp_sent_at == session.email_otp_sent_at  # no new code
     assert after.email_otp_expires_at == session.email_otp_expires_at
-    assert audit_events(client)[-3:] == ["email_otp_sent", "email_otp_duplicate_ignored", "email_otp_duplicate_ignored"]
+    events = audit_events(client)
+    assert events.count("email_otp_sent") == 1
+    assert events[-12:] == ["email_otp_duplicate_ignored"] * 12
+
+
+def test_duplicate_at_120s_is_ignored_and_after_expiry_sends(client, app, fake_clock):
+    start_to_consent(client)
+    send(client)
+    fake_clock.advance(120)  # still valid (verify accepts at 120 s)
+    send(client)
+    assert audit_events(client)[-1] == "email_otp_duplicate_ignored"
+    fake_clock.advance(1)  # expired
+    send(client)
+    assert audit_events(client)[-1] == "email_otp_sent"
+    assert app.state.store.get("conv-test-1").email_otp_send_count == 2
 
 
 def test_duplicate_is_not_sent_to_cirl(client, monkeypatch):
@@ -394,19 +434,20 @@ def test_duplicate_is_not_sent_to_cirl(client, monkeypatch):
     send(client)
     send(client)
     assert len(calls) == 1
+    resend(client)
+    assert len(calls) == 2
 
 
-def test_send_after_30s_is_a_new_send(client, app, fake_clock):
+def test_resend_true_always_sends_and_counts(client, app):
     start_to_consent(client)
     send(client)
-    fake_clock.advance(30)
-    result, payload = send(client)
+    result, payload = resend(client)  # code still valid, but the customer asked for a new one
     assert result["isError"] is False and payload["message_for_customer"] == SENT_TEXT
-    assert app.state.store.get("conv-test-1").email_otp_send_count == 2
     assert audit_events(client)[-1] == "email_otp_sent"
+    assert app.state.store.get("conv-test-1").email_otp_send_count == 2
 
 
-def test_send_to_different_email_within_30s_is_a_new_send(client, app):
+def test_different_email_while_code_valid_is_a_new_send(client, app):
     start_to_consent(client)
     send(client)
     _, payload = send(client, "priya@example.com")
@@ -415,33 +456,20 @@ def test_send_to_different_email_within_30s_is_a_new_send(client, app):
     assert audit_events(client)[-1] == "email_otp_sent"
 
 
-def test_send_after_expiry_is_a_new_send(client, app, fake_clock, monkeypatch):
-    # The cooldown applies only while the code is still valid.
-    from app import cirl_client
-
-    real = cirl_client.send_email_otp
-    monkeypatch.setattr(cirl_client, "send_email_otp", lambda *a, **kw: {**real(*a, **kw), "expires_in_seconds": 10})
-    start_to_consent(client)
-    send(client)
-    fake_clock.advance(11)  # expired, though less than 30 s ago
-    send(client)
-    assert app.state.store.get("conv-test-1").email_otp_send_count == 2
-    assert audit_events(client)[-1] == "email_otp_sent"
-
-
-def test_duplicates_do_not_use_up_the_send_limit(client, app, fake_clock):
+def test_duplicates_do_not_use_up_the_send_limit(client, app):
     start_to_consent(client)
     for _ in range(5):
-        resend_later(client, fake_clock)
-        result, _ = send(client)  # immediate repeat: ignored
+        resend(client)
+        result, _ = send(client)  # repeat while valid: ignored
         assert result["isError"] is False
     assert app.state.store.get("conv-test-1").email_otp_send_count == 5
-    result, payload = resend_later(client, fake_clock)
-    assert_tool_error(result, payload, "GW-010")
+    result, _ = send(client)  # still a duplicate, so not refused
+    assert result["isError"] is False
+    assert_tool_error(*resend(client), "GW-010")
 
 
 def test_duplicate_keeps_attempt_count_and_code(client, app):
-    # An ignored duplicate resets nothing: the first code still verifies.
+    # An ignored duplicate resets nothing: the same code still verifies.
     start_to_consent(client)
     send(client)
     assert_tool_error(*verify(client, "000000"), "GW-011")
@@ -449,3 +477,22 @@ def test_duplicate_keeps_attempt_count_and_code(client, app):
     assert app.state.store.get("conv-test-1").email_otp_failed_attempts == 1
     result, _ = verify(client, "123456")
     assert result["isError"] is False
+
+
+# --- email shown as entered, masked in the audit -------------------------------------------
+
+
+def test_customer_text_shows_email_as_entered_and_audit_masks_it(client):
+    start_to_consent(client)
+    typed = "Rahul.Sharma@Gmail.com"
+    _, payload = call(client, "send_email_otp", {"email_id": f"  {typed} "})
+    assert payload["email_id"] == typed
+    assert payload["message_for_customer"] == SENT_TEXT.replace(EMAIL, typed)
+    _, dup = call(client, "send_email_otp", {"email_id": typed.lower()})  # duplicate keeps the first spelling
+    assert dup["message_for_customer"] == payload["message_for_customer"]
+
+    entries = client.get("/admin/audit", headers=headers()).json()["entries"][-2:]
+    for entry in entries:
+        text = json.dumps(entry)
+        assert typed not in text and typed.lower() not in text
+        assert "Ra*****@Gmail.com" in entry["output"]["message_for_customer"]
