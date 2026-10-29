@@ -278,6 +278,7 @@ def test_messages_name_no_tools(client, app, fake_clock):
     def run(tool, args=None, **kw):
         result, payload = call(client, tool, args, **kw)
         messages.append((tool, result["isError"], payload["message_for_agent"]))
+        return payload
 
     # Failures
     run("check_existing_eia", {"pan": "ABCPE1234E", "email_id": "a@b.com"})  # GW-001
@@ -303,8 +304,18 @@ def test_messages_name_no_tools(client, app, fake_clock):
     run("send_otp")
     run("verify_otp", {"otp_no": "123456"})
     run("verify_otp", {"otp_no": "123456"})
+    run("create_password_link")  # GW-020
     run("send_email_otp", {"email_id": "rahul@gmail.com"})
     run("verify_email_otp", {"otp_no": "123456"})
+    run("check_password_status")  # GW-023
+    link = run("create_password_link")
+    run("check_password_status")  # GW-021
+    token = link["url"].split("t=", 1)[1]
+    client.post("/set-password", data={"t": token, "password": "Str0ng!pass", "confirm": "Str0ng!pass"})
+    run("check_password_status")
+    run("create_password_link")
+    fake_clock.advance(600)
+    run("check_password_status")  # password already set: still ok
 
     successes = [m for m in messages if not m[1]]
     assert {m[0] for m in successes} == set(TOOL_NAMES)

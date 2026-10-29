@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from app import cirl_client, clock
+from app import cirl_client, clock, password_page
 from app.audit import AuditLog
 from app.config import Settings
 from app.masking import mask_phone
@@ -41,11 +41,14 @@ class ToolContext:
 
 
 class ToolError(Exception):
-    def __init__(self, error_code: str, error_msg: str, message_for_agent: str, **extra: Any):
+    def __init__(
+        self, error_code: str, error_msg: str, message_for_agent: str, *, event: str = "tool_failed", **extra: Any
+    ):
         super().__init__(error_msg)
         self.error_code = error_code
         self.error_msg = error_msg
         self.message_for_agent = message_for_agent
+        self.event = event  # audit event name
         self.extra = extra
 
     def payload(self) -> dict:
@@ -341,12 +344,7 @@ CUSTOMER_EMAIL_OTP_SENT = (
 )
 CUSTOMER_INVALID_EMAIL = "That doesn't look like a valid email address. Please enter your valid Email ID:"
 CUSTOMER_EMAIL_OTP_SEND_LIMIT = "You've reached the limit for verification codes. Please try again later."
-CUSTOMER_EMAIL_VERIFIED = (
-    "Email verified! Let's establish your portal access. Please enter a secure password for your new customer account.\n"
-    "Criteria:\n"
-    "- At least 8 characters\n"
-    "- Mixed case & 1 special character"
-)
+CUSTOMER_EMAIL_VERIFIED = "Email verified!"
 CUSTOMER_EMAIL_OTP_WRONG = "That code is incorrect. Please re-enter the 6-digit OTP:"
 CUSTOMER_EMAIL_OTP_EXPIRED = "That code has expired. Reply RESEND and I'll send you a new one."
 CUSTOMER_EMAIL_OTP_LOCKED = "Too many incorrect attempts. Please start again later by sending Hi."
@@ -474,6 +472,81 @@ def verify_email_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
     }, "email_verified"
 
 
+CUSTOMER_PASSWORD_LINK = (
+    "Let's set up your portal password. For your security, please set it on this secure page "
+    "(link valid for 10 minutes):\n{url}\n\n"
+    "*Criteria:*\n"
+    "- At least 8 characters\n"
+    "- Mixed case & 1 special character\n\n"
+    "Once done, reply DONE here."
+)
+CUSTOMER_VERIFY_EMAIL_FIRST = "Please verify your email first."
+CUSTOMER_PASSWORD_SET = "Your password has been set successfully."
+CUSTOMER_PASSWORD_PENDING = (
+    "We haven't received your password yet. Please set it using the secure link, then reply DONE."
+)
+CUSTOMER_PASSWORD_LINK_EXPIRED = "Your secure link has expired. Reply NEW LINK and I'll send you a fresh one."
+
+
+def create_password_link(ctx: ToolContext, args: dict) -> tuple[dict, str]:
+    session = ctx.store.get(ctx.conversation_id)
+    if session is None or not session.email_verified:
+        raise ToolError(
+            "GW-020",
+            "Email has not been verified.",
+            "The customer's email is not verified yet.",
+            message_for_customer=CUSTOMER_VERIFY_EMAIL_FIRST,
+        )
+    if not session.consent_id:
+        raise ToolError("GW-002", "Customer consent has not been recorded.", "Ask the customer for consent first.")
+
+    token = password_page.new_token()
+    # Replacing the hash invalidates any older unused link for this session.
+    session.password_link_hash = password_page.hash_token(token)
+    session.password_link_expires_at = clock.now() + password_page.LINK_VALID_SECONDS
+    session.password_link_attempts = 0
+    session.password_link_used = False
+    ctx.store.save(session)
+
+    url = f"{ctx.settings.public_base_url}/set-password?t={token}"
+    del token
+    # The token only leaves here inside the link for the customer; audit masking redacts it.
+    return {
+        "ok": True,
+        "url": url,
+        "expires_in_seconds": password_page.LINK_VALID_SECONDS,
+        "message_for_agent": "Password link created.",
+        "message_for_customer": CUSTOMER_PASSWORD_LINK.format(url=url),
+    }, "password_link_created"
+
+
+def check_password_status(ctx: ToolContext, args: dict) -> tuple[dict, str]:
+    session = _require_session(ctx)
+    if session.password_hash:
+        return {
+            "ok": True,
+            "password_set": True,
+            "message_for_agent": "Password set.",
+            "message_for_customer": CUSTOMER_PASSWORD_SET,
+        }, "password_status_checked"
+    if not session.password_link_hash:
+        raise ToolError("GW-023", "No password link has been created.", "No password link has been sent to the customer yet.")
+    if not password_page.link_usable(session):
+        raise ToolError(
+            "GW-022",
+            "Password link has expired.",
+            "The customer's password link has expired.",
+            event="password_link_expired",
+            message_for_customer=CUSTOMER_PASSWORD_LINK_EXPIRED,
+        )
+    raise ToolError(
+        "GW-021",
+        "Password has not been set yet.",
+        "The customer has not set their password yet.",
+        message_for_customer=CUSTOMER_PASSWORD_PENDING,
+    )
+
+
 # --- registry ---------------------------------------------------------------------------
 
 
@@ -573,6 +646,23 @@ TOOLS: dict[str, Tool] = {
             ),
             verify_email_otp,
         ),
+        Tool(
+            "create_password_link",
+            "Creates a one-time secure link (valid 10 minutes) where the customer sets their portal password, so the "
+            "password never passes through the chat. Any older unused link stops working. "
+            "Call this after the customer's email is verified, or when the customer asks for a new link. "
+            "Send message_for_customer to the customer exactly as given.",
+            _schema(),
+            create_password_link,
+        ),
+        Tool(
+            "check_password_status",
+            "Checks whether the customer has set their password on the secure page. "
+            "Call this when the customer replies DONE after receiving the password link. "
+            "Send message_for_customer to the customer exactly as given.",
+            _schema(),
+            check_password_status,
+        ),
     ]
 }
 
@@ -605,7 +695,7 @@ def call_tool(tool: Tool, args: dict, ctx: ToolContext, audit: AuditLog) -> dict
         payload, event = tool.handler(ctx, args)
         is_error, error_code = False, None
     except ToolError as e:
-        payload, event = e.payload(), "tool_failed"
+        payload, event = e.payload(), e.event
         is_error, error_code = True, e.error_code
     except NotImplementedError:
         payload = ToolError(

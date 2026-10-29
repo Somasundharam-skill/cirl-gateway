@@ -71,3 +71,8 @@ if ($toolNames -contains "check_existing_eia") {
 Invoke-Tool "send_email_otp" @{ email_id = "rahul@gmail.com" }
 Invoke-Tool "verify_email_otp" @{ otp_no = "000000" }   # wrong code -> isError GW-011
 Invoke-Tool "verify_email_otp" @{ otp_no = "123456" }
+
+# Password setup: the customer sets the password in the browser, never in the chat.
+Invoke-Tool "create_password_link"
+Invoke-Tool "check_password_status"   # not set yet -> isError GW-021
+Write-Host "Open the link above in a browser, set a password, then call check_password_status again." -ForegroundColor Cyan

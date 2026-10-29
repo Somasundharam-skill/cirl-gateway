@@ -6,7 +6,14 @@ from app.main import create_app
 from app.tools import TOOLS
 from tests.conftest import API_KEY, call, headers, rpc
 
-REGISTRATION = ["start_journey", "record_consent", "send_email_otp", "verify_email_otp"]
+REGISTRATION = [
+    "start_journey",
+    "record_consent",
+    "send_email_otp",
+    "verify_email_otp",
+    "create_password_link",
+    "check_password_status",
+]
 DISABLED = ["check_existing_eia", "send_otp", "verify_otp"]
 
 

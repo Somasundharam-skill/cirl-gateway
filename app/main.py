@@ -10,7 +10,7 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from app import mcp
+from app import mcp, password_page
 from app.audit import AuditLog
 from app.config import Settings, load_settings
 from app.sessions import InMemorySessionStore
@@ -19,9 +19,25 @@ from app.tools import check_enabled_tools
 logger = logging.getLogger("cirl_gateway")
 
 
+class RedactQueryFilter(logging.Filter):
+    """Strip the query string from uvicorn access-log lines for /set-password (the link token is in it)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # uvicorn.access args: (client_addr, method, full_path, http_version, status_code)
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            if args[2].startswith("/set-password"):
+                record.args = args[:2] + (args[2].split("?", 1)[0],) + args[3:]
+        return True
+
+
 def configure_logging(level: str) -> None:
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logging.getLogger("cirl_gateway").setLevel(level)
+
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, RedactQueryFilter) for f in access_logger.filters):
+        access_logger.addFilter(RedactQueryFilter())
 
     # Audit lines are emitted as bare JSON, one per line.
     audit_logger = logging.getLogger("cirl_gateway.audit")
@@ -48,6 +64,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.store = InMemorySessionStore(ttl_seconds=settings.session_ttl_minutes * 60)
     app.state.audit = AuditLog()
+    password_page.add_routes(app)
+    if not settings.whatsapp_number:
+        logger.warning("WHATSAPP_NUMBER is not set: the password success page will have no 'Return to WhatsApp' button")
 
     def authorized(request: Request) -> bool:
         expected = settings.gateway_api_key

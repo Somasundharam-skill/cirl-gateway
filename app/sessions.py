@@ -42,10 +42,23 @@ class Session:
     email_otp_failed_attempts: int = 0  # counted across resends
     email_verified: bool = False
 
+    # Password setup. Only SHA-256 of the link token and an argon2 hash of the
+    # password are kept; neither the token nor the password is stored.
+    password_link_hash: str | None = None
+    password_link_expires_at: float | None = None
+    password_link_attempts: int = 0
+    password_link_used: bool = False
+    password_hash: str | None = None
+    password_set_at: str | None = None
+
 
 class SessionStore(ABC):
     @abstractmethod
     def get(self, conversation_id: str) -> Session | None: ...
+
+    @abstractmethod
+    def get_by_password_link(self, link_hash: str) -> Session | None:
+        """The session whose current password link has this SHA-256 hash."""
 
     @abstractmethod
     def save(self, session: Session) -> None: ...
@@ -73,6 +86,15 @@ class InMemorySessionStore(SessionStore):
                 del self._data[conversation_id]
                 return None
             return dataclasses.replace(session)
+
+    def get_by_password_link(self, link_hash: str) -> Session | None:
+        # Linear scan is fine for an in-memory demo; a database would index this column.
+        now = clock.now()
+        with self._lock:
+            for session in self._data.values():
+                if session.password_link_hash == link_hash and not self._expired(session, now):
+                    return dataclasses.replace(session)
+        return None
 
     def save(self, session: Session) -> None:
         now = clock.now()

@@ -31,7 +31,10 @@ def fake_clock(monkeypatch):
     return fc
 
 
-ALL_TOOLS = "start_journey,record_consent,check_existing_eia,send_otp,verify_otp,send_email_otp,verify_email_otp"
+ALL_TOOLS = (
+    "start_journey,record_consent,check_existing_eia,send_otp,verify_otp,send_email_otp,verify_email_otp,"
+    "create_password_link,check_password_status"
+)
 
 
 @pytest.fixture

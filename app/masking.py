@@ -11,6 +11,8 @@ from typing import Any
 _PAN_ANYWHERE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]{5}[0-9]{4}[A-Za-z](?![A-Za-z0-9])")
 _TWELVE_DIGITS = re.compile(r"(?<!\d)\d{12}(?!\d)")
 _EMAIL_ANYWHERE = re.compile(r"[^\s@*]+@[^\s@]+\.[A-Za-z]{2,}")
+# Password-link token in any URL: .../set-password?t=<token>
+_LINK_TOKEN = re.compile(r"([?&]t=)[A-Za-z0-9_\-]+")
 
 
 def mask_pan(pan: Any) -> str:
@@ -59,6 +61,10 @@ _KEY_MASKERS = {
     "otp": mask_otp,
     "otp_no": mask_otp,
     "password": mask_otp,
+    "confirm": mask_otp,
+    "token": mask_otp,
+    "t": mask_otp,
+    "password_hash": mask_otp,
     "phone": mask_phone,
     "mobile_no": mask_phone,
     "email": mask_email,
@@ -68,6 +74,7 @@ _KEY_MASKERS = {
 
 
 def scrub_text(text: str) -> str:
+    text = _LINK_TOKEN.sub(r"\1[REDACTED]", text)
     text = _PAN_ANYWHERE.sub(lambda m: mask_pan(m.group(0)), text)
     text = _EMAIL_ANYWHERE.sub(lambda m: mask_email(m.group(0)), text)
     return _TWELVE_DIGITS.sub(lambda m: mask_uid(m.group(0)), text)

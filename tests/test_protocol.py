@@ -48,6 +48,8 @@ def test_tools_list_shape(client):
         "verify_otp",
         "send_email_otp",
         "verify_email_otp",
+        "create_password_link",
+        "check_password_status",
     ]
     for t in tools:
         assert t["description"] and "call" in t["description"].lower()

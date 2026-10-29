@@ -200,10 +200,7 @@ SENT_TEXT = (
     "Great! We've sent an Email Verification Code to rahul@gmail.com. "
     "Please enter the 6-digit OTP below (Valid for 120 seconds):"
 )
-VERIFIED_TEXT = (
-    "Email verified! Let's establish your portal access. Please enter a secure password for your new customer account.\n"
-    "Criteria:\n- At least 8 characters\n- Mixed case & 1 special character"
-)
+VERIFIED_TEXT = "Email verified!"
 INVALID_EMAIL_TEXT = "That doesn't look like a valid email address. Please enter your valid Email ID:"
 SEND_LIMIT_TEXT = "You've reached the limit for verification codes. Please try again later."
 WRONG_TEXT = "That code is incorrect. Please re-enter the 6-digit OTP:"
