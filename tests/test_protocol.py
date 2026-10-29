@@ -41,6 +41,7 @@ def test_tools_list_shape(client):
     tools = rpc(client, "tools/list").json()["result"]["tools"]
     names = [t["name"] for t in tools]
     assert names == [
+        "journey_turn",
         "start_journey",
         "record_consent",
         "check_existing_eia",

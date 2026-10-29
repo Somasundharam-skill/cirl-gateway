@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, Response
 
 from app import mcp, password_page
 from app.audit import AuditLog
+from app.journey import TurnCache
 from app.config import Settings, load_settings
 from app.sessions import InMemorySessionStore
 from app.tools import check_enabled_tools
@@ -64,6 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.store = InMemorySessionStore(ttl_seconds=settings.session_ttl_minutes * 60)
     app.state.audit = AuditLog()
+    app.state.turn_cache = TurnCache()
     password_page.add_routes(app)
     if not settings.whatsapp_number:
         logger.warning("WHATSAPP_NUMBER is not set: the password success page will have no 'Return to WhatsApp' button")
@@ -96,6 +98,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     store=app.state.store,
                     audit=app.state.audit,
                     new_session_id=lambda: uuid.uuid4().hex,
+                    turn_cache=app.state.turn_cache,
                 )
             except Exception:
                 logger.exception("Unhandled error in /mcp")

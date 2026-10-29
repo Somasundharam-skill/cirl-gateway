@@ -8,19 +8,9 @@ from dataclasses import dataclass, field
 CIRL_APIS = ("CHECK_EXISTING_EIA", "SEND_OTP", "VERIFY_OTP", "SEND_EMAIL_OTP")
 CIRL_MODES = ("mock", "real")
 
-# Tools listed and callable. For now the journey is registration only; the
-# other tools (check_existing_eia, send_otp, verify_otp) stay in the code but
-# are disabled unless named in ENABLED_TOOLS.
-DEFAULT_ENABLED_TOOLS = (
-    "start_journey",
-    "record_consent",
-    "send_email_otp",
-    "verify_email_otp",
-    "create_password_link",
-    "check_password_status",
-    "start_kyc",
-    "defer_kyc",
-)
+# Tools listed and callable. journey_turn runs the whole journey; the
+# single-step tools stay in the code but are disabled unless named in ENABLED_TOOLS.
+DEFAULT_ENABLED_TOOLS = ("journey_turn",)
 
 
 @dataclass(frozen=True)
@@ -33,6 +23,7 @@ class Settings:
     enabled_tools: tuple[str, ...] = DEFAULT_ENABLED_TOOLS
     public_base_url: str = "http://localhost:8000"
     whatsapp_number: str = ""  # digits only
+    privacy_notice_url: str = "[link]"
 
     def cirl_mode(self, api: str) -> str:
         return self.cirl_modes.get(api, "mock")
@@ -75,4 +66,5 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         enabled_tools=enabled or DEFAULT_ENABLED_TOOLS,
         public_base_url=public_base_url,
         whatsapp_number=whatsapp_number,
+        privacy_notice_url=env.get("PRIVACY_NOTICE_URL", "").strip() or "[link]",
     )

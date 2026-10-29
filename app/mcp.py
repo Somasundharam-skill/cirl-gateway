@@ -46,6 +46,7 @@ def handle(
     store: SessionStore,
     audit: AuditLog,
     new_session_id,
+    turn_cache=None,
 ) -> RpcOutcome:
     """Handle one decoded JSON-RPC message. `headers` must be case-insensitive."""
     if isinstance(message, list):
@@ -76,11 +77,11 @@ def handle(
     if method == "tools/list":
         return _result(req_id, {"tools": list_tools(settings)})
     if method == "tools/call":
-        return _tools_call(req_id, params, headers, settings, store, audit)
+        return _tools_call(req_id, params, headers, settings, store, audit, turn_cache)
     return rpc_error(req_id, METHOD_NOT_FOUND, f"Method not found: {method}")
 
 
-def _tools_call(req_id, params, headers, settings, store, audit) -> RpcOutcome:
+def _tools_call(req_id, params, headers, settings, store, audit, turn_cache=None) -> RpcOutcome:
     name = params.get("name")
     args = params.get("arguments") or {}
     if not isinstance(name, str):
@@ -109,5 +110,6 @@ def _tools_call(req_id, params, headers, settings, store, audit) -> RpcOutcome:
         channel=headers.get("x-sa-channel"),
         auth_callback=headers.get("x-sa-auth-callback"),
         auth_callback_token=headers.get("x-sa-auth-callback-token"),
+        turn_cache=turn_cache,
     )
     return _result(req_id, call_tool(tool, args, ctx, audit))

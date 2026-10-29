@@ -318,6 +318,7 @@ def test_messages_name_no_tools(client, app, fake_clock):
     run("check_password_status")  # password already set: still ok
     run("defer_kyc")
     run("start_kyc")
+    run("journey_turn", {"customer_message": "hi"})
 
     successes = [m for m in messages if not m[1]]
     assert {m[0] for m in successes} == set(TOOL_NAMES)

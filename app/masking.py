@@ -70,6 +70,8 @@ _KEY_MASKERS = {
     "email": mask_email,
     "email_id": mask_email,
     "eia_no": mask_account_no,
+    # journey_turn input: free text that can contain an OTP, a password or an email
+    "customer_message": lambda _: "[REDACTED]",
 }
 
 

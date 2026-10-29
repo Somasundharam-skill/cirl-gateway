@@ -17,6 +17,7 @@ from app import clock
 class Session:
     conversation_id: str
     state: str = "STARTED"
+    journey_state: str = "START"  # journey_turn state machine (app.journey)
     phone: str | None = None  # +91XXXXXXXXXX
     channel: str | None = None
     created_at: float = 0.0

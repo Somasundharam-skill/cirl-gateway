@@ -34,7 +34,7 @@ python -m pytest
 |---|---|---|
 | `GATEWAY_API_KEY` | *(none)* | Bearer token required on `/mcp` and `/admin/audit`. If unset, every request is rejected. |
 | `SESSION_TTL_MINUTES` | `60` | Idle time before a conversation's session is dropped. |
-| `ENABLED_TOOLS` | `start_journey,record_consent,send_email_otp,verify_email_otp,create_password_link,check_password_status,start_kyc,defer_kyc` | Comma-separated tools that `tools/list` shows and `tools/call` accepts. Empty means the default. A tool that isn't listed is rejected exactly like an unknown tool (-32602). An unknown name stops the server at startup. |
+| `ENABLED_TOOLS` | `journey_turn` | Comma-separated tools that `tools/list` shows and `tools/call` accepts. Empty means the default. A tool that isn't listed is rejected exactly like an unknown tool (-32602). An unknown name stops the server at startup. |
 | `CIRL_MODE_CHECK_EXISTING_EIA` | `mock` | `mock` or `real` for CIRL verifyeIAAccount. |
 | `CIRL_MODE_SEND_OTP` | `mock` | `mock` or `real` for CIRL sendOtp. |
 | `CIRL_MODE_VERIFY_OTP` | `mock` | `mock` or `real` for CIRL verifyOtp. |
@@ -42,6 +42,7 @@ python -m pytest
 | `MOCK_EMAIL_OTP` | `123456` | 6-digit code that the mock `verify_email_otp` accepts. |
 | `PUBLIC_BASE_URL` | `RENDER_EXTERNAL_URL`, else `http://localhost:8000` | Public address of this server, used to build the password link (`{PUBLIC_BASE_URL}/set-password?t=…`). On Render, `RENDER_EXTERNAL_URL` is set automatically. |
 | `WHATSAPP_NUMBER` | *(none)* | WhatsApp business number, e.g. `+912269986221`. The password success page links to `https://wa.me/<digits>?text=DONE`. If unset, the page has no WhatsApp button. |
+| `PRIVACY_NOTICE_URL` | `[link]` | Privacy notice link shown in the `journey_turn` welcome text. |
 | `LOG_LEVEL` | `INFO` | Python log level. |
 | `PORT` | `8000` | Port to bind (Render sets this). |
 
@@ -75,19 +76,58 @@ Headers read on every `tools/call`: `X-Sa-Conversation-Id` (required, the sessio
 `X-Sa-End-User-Email`, `X-Sa-End-User-Name`, `X-Sa-Channel`. Only the phone (normalised to `+91XXXXXXXXXX`)
 and the channel are stored.
 
-## Tools and mock behaviour
+## `journey_turn`: the whole journey in one tool
 
-**For now the journey is registration only:** `start_journey` → `record_consent` → `send_email_otp` → `verify_email_otp` → `create_password_link` → `check_password_status` → `start_kyc` or `defer_kyc` (consent, email, email OTP, verified, password, KYC intent). These eight are the default `ENABLED_TOOLS`. The order is decided by Perfox Steps, not the gateway. Each tool still enforces its own preconditions, such as consent.
+`journey_turn {customer_message}` is the only tool enabled by default. The agent calls it with **every** customer message, unchanged, and sends back `message_for_customer` exactly as given. The gateway runs the journey as a state machine on the server (state kept on the session, keyed by `X-Sa-Conversation-Id`), reusing the single-step tool handlers below for consent, email OTP, the password link and the KYC choice, so their rules (5 sends, 120 s validity, 3-attempt lock, one-time hashed links) all still apply.
 
-`check_existing_eia`, `send_otp` and `verify_otp` are **disabled by default**. Their code and tests are kept, and they can be switched back on by adding them to `ENABLED_TOOLS`. While disabled, they are not listed and `tools/call` answers `Unknown tool`.
+Result: `{ok: true, state, recognised, message_for_agent, message_for_customer}`. `recognised: false` means the message wasn't a valid answer for the current stage: the agent may briefly answer a side question, then send `message_for_customer`. Only a missing or non-string `customer_message` (or one over 4096 characters) is an error (`GW-004`).
+
+| State | Customer says | Next state | `message_for_customer` |
+|---|---|---|---|
+| START | anything (first message, after an expired session, or `RESTART`) | CONSENT | Welcome to CENTRICO Insurance Repository Limited (CIRL)! … privacy notice: {PRIVACY_NOTICE_URL} … Reply YES to continue or NO to stop. Also saves the phone and channel from the headers. |
+| CONSENT | yes, y, ok, okay, agree, i agree, sure, proceed, continue, haan | EMAIL | To begin, please enter your valid Email ID: *(consent recorded, notice `v1`)* |
+| CONSENT | no, n, stop, don't, nahi | DECLINED | No problem. We can't open an eIA without your consent. If you change your mind, just reply YES. For help, write to cirthelpdesk@cirl.co.in |
+| CONSENT | anything else *(recognised false)* | CONSENT | Please reply YES to continue or NO to stop. |
+| DECLINED | yes-like / anything else | EMAIL / DECLINED | the EMAIL text / the decline text again |
+| EMAIL | a message containing a valid email (the first one found) | OTP | Great! We've sent an Email Verification Code to {email as typed}. Please enter the 6-digit OTP below (Valid for 120 seconds): |
+| EMAIL | no valid email *(recognised false)* | EMAIL | That doesn't look like a valid email address. Please enter your valid Email ID: |
+| OTP | the right 6-digit code (spaces ignored) | PASSWORD | the first-link text: Email verified! Let's establish your portal access. … {url} … Once done, reply DONE here. |
+| OTP | a wrong code | OTP | That code is incorrect. Please re-enter the 6-digit OTP: |
+| OTP | a code after 120 s | OTP | That code has expired. Reply RESEND and I'll send you a new one. |
+| OTP | the 3rd wrong code in total | LOCKED | Too many incorrect attempts. Please start again later. *(every later message gets this too)* |
+| OTP | RESEND | OTP | Great! We've sent a new Email Verification Code to {email}. Please enter the 6-digit OTP below (Valid for 120 seconds): *(after 5 sends: the send-limit text)* |
+| OTP | no code *(recognised false)* | OTP | Please enter the 6-digit OTP sent to {email}, or reply RESEND for a new code. |
+| PASSWORD | DONE / done / finished / set, password set | KYC_CHOICE | Your password has been set successfully.<br><br>Account access generated successfully! Do you want to complete your pending KYC process now to activate your repository benefits?<br>Reply 1 for Complete KYC Now or 2 for Later. |
+| PASSWORD | DONE, password not set | PASSWORD | We haven't received your password yet. Please set it using the secure link, then reply DONE. |
+| PASSWORD | DONE, link expired | PASSWORD | Your secure link has expired. Reply NEW LINK and I'll send you a fresh one. |
+| PASSWORD | NEW LINK | PASSWORD | Here's your new secure link (valid for 10 minutes): … |
+| PASSWORD | something that looks like a password (no spaces, 8+ chars, upper, lower, special) | PASSWORD | For your security, please don't share your password here. Use the secure link instead. *(never stored or logged)* |
+| PASSWORD | anything else *(recognised false)* | PASSWORD | Please set your password using the secure link, then reply DONE. |
+| KYC_CHOICE | 1 / now | KYC_DOC | Please select your preferred document for immediate validation:<br>Reply 1 for Aadhaar / UID or 2 for PAN. |
+| KYC_CHOICE | 2 / later / not now | KYC_DEFERRED | No problem. You can complete your KYC any time by sending Hi. Befikar Raho! |
+| KYC_CHOICE | anything else *(recognised false)* | KYC_CHOICE | Please reply 1 for Complete KYC Now or 2 for Later. |
+| KYC_DEFERRED | anything | KYC_CHOICE | the KYC question, without the password line |
+| KYC_DOC | anything | KYC_DOC | Thanks! KYC verification is coming next in this demo. *(placeholder for the next phase)* |
+
+**Global rules**
+
+- **hi / hello** mid-journey repeats the current stage's prompt (`recognised: true`) without side effects, e.g. at OTP it doesn't send a new code.
+- **RESTART** deletes the session and starts again with the welcome text (state CONSENT). Useful for testing.
+- An **expired session** (idle longer than `SESSION_TTL_MINUTES`) starts again at START.
+- **Duplicates:** if the same `customer_message` as the previous one arrives again within 15 seconds in the same conversation, the previous result is returned with no side effects (audit event `journey_duplicate_ignored`). The gateway keeps only a keyed hash (HMAC) of the last message, plus the last result, in process memory for 15 seconds.
+- **Audit:** every turn writes one entry with `from_state`, `to_state` and `event` (e.g. `consent_recorded`, `email_otp_sent`, `email_otp_wrong`, `email_verified`, `password_confirmed`, `kyc_deferred`, `unrecognised`). `customer_message` is always `[REDACTED]` in the audit, because it can hold an OTP, a password or an email; emails and link tokens in `message_for_customer` are masked as usual.
+
+## Single-step tools (disabled by default)
+
+The tools below are what `journey_turn` uses internally. They are **disabled by default** (not listed; `tools/call` answers `Unknown tool`), and their code and tests are kept. Add them to `ENABLED_TOOLS` to let an agent drive the steps itself. In that mode the order is decided by Perfox Steps, and each tool still enforces its own preconditions, such as consent.
 
 | Tool | Arguments | Requires | Mock behaviour | Failures (`isError`) |
 |---|---|---|---|---|
 | `start_journey` | – | – | Creates a session for the conversation and saves the phone and channel (audit event `journey_started`). Idempotent: if a session already exists for this conversation id, it is returned unchanged (audit event `journey_already_started`). A new chat has a new conversation id, so it starts fresh. | – |
 | `record_consent` | `consent: bool`, `notice_version: string` | session (created if missing) | Stores the consent time and notice version. Returns a `consent_id` (`CNS-…`). Idempotent: if consent is already recorded, the existing `consent_id`, timestamp and notice version are returned. | `GW-003` consent false (clears any earlier consent), `GW-004` invalid input |
-| `check_existing_eia` *(disabled)* | `pan` **or** `uid`, `email_id`, `mobile_no?` | consent | PAN `ABCPE1234E` → `status "true"`, `eia_no "2345678904567"`. Anything else → `status "false"`, `E-102 "eIA Account does not exist."`. Both are successful calls (`eia_exists` true/false). Generates `trxn_no` `C1-` + 17 digits and saves it as `client_trxn_id`. `mobile_no` defaults to the session phone. | `GW-004` bad PAN/UID/email/mobile, or both/neither of PAN and UID. `GW-002` no consent |
-| `send_otp` *(disabled)* | – | consent, `client_trxn_id` | Returns a masked email (`ra*****@gmail.com`), masked mobile (`98XXXXXX20`), `otp_start_date`, `otp_end_date`, `otp_expire_time: 300` and `trxn_no`. The OTP is always `123456`. A new OTP resets the wrong-attempt count. | `E-203` more than 5 sends, `GW-005` no eIA check yet |
-| `verify_otp` *(disabled)* | `otp_no: string` (6 digits) | `send_otp` | `123456` → `otp_verified: true`. | `E-302` wrong OTP, `E-303` more than 300 s after send, `E-304` locked after 3 wrong attempts, `GW-006` no OTP sent, `GW-004` not 6 digits |
+| `check_existing_eia` | `pan` **or** `uid`, `email_id`, `mobile_no?` | consent | PAN `ABCPE1234E` → `status "true"`, `eia_no "2345678904567"`. Anything else → `status "false"`, `E-102 "eIA Account does not exist."`. Both are successful calls (`eia_exists` true/false). Generates `trxn_no` `C1-` + 17 digits and saves it as `client_trxn_id`. `mobile_no` defaults to the session phone. | `GW-004` bad PAN/UID/email/mobile, or both/neither of PAN and UID. `GW-002` no consent |
+| `send_otp` | – | consent, `client_trxn_id` | Returns a masked email (`ra*****@gmail.com`), masked mobile (`98XXXXXX20`), `otp_start_date`, `otp_end_date`, `otp_expire_time: 300` and `trxn_no`. The OTP is always `123456`. A new OTP resets the wrong-attempt count. | `E-203` more than 5 sends, `GW-005` no eIA check yet |
+| `verify_otp` | `otp_no: string` (6 digits) | `send_otp` | `123456` → `otp_verified: true`. | `E-302` wrong OTP, `E-303` more than 300 s after send, `E-304` locked after 3 wrong attempts, `GW-006` no OTP sent, `GW-004` not 6 digits |
 | `send_email_otp` | `email_id?: string`, `resend?: boolean` | consent | "Emails" the code `MOCK_EMAIL_OTP` (default `123456`), valid 120 s. Stores the email and the expiry time. Returns `{ok, email_id, expires_in_seconds: 120, message_for_customer}`. `email_id` is used exactly as the customer typed it in `message_for_customer` (masked in the audit). While an unexpired code exists for the same email, a repeat call sends nothing and returns the same success result; it doesn't count towards the 5-send limit and is audited as `email_otp_duplicate_ignored`. `resend: true` (customer asked for a new code) always sends a fresh code to the stored email and counts towards the limit. | `GW-002` no consent, `GW-004` invalid email (or omitted with none stored), or `resend` not a boolean, `GW-010` more than 5 sends, `GW-013` locked |
 | `verify_email_otp` | `otp_no: string` (6 digits) | `send_email_otp` | The correct code → `email_verified: true`. | `GW-011` wrong code, `GW-012` more than 120 s after send, `GW-013` locked after 3 wrong attempts in total (across resends, for the whole session), `GW-014` no email OTP sent, `GW-002` no consent, `GW-004` not 6 digits |
 | `create_password_link` | – | `email_verified` | Creates a one-time link `{PUBLIC_BASE_URL}/set-password?t=<token>`, valid 10 minutes. Only the SHA-256 of the token is stored. A new link invalidates any older unused one. Returns `{ok, url, expires_in_seconds: 600, message_for_customer}`. | `GW-020` email not verified, `GW-002` no consent |
@@ -97,7 +137,7 @@ and the channel are stored.
 
 The email OTP tools are independent of the mobile OTP flow and only need consent.
 
-### `message_for_customer`
+### `message_for_customer` (single-step tools)
 
 `send_email_otp`, `verify_email_otp`, `create_password_link`, `check_password_status`, `start_kyc` and `defer_kyc` also return `message_for_customer`: the exact text the agent sends to the customer.
 `isError`, `error_code` and `message_for_agent` are unchanged.
@@ -138,9 +178,10 @@ The password never passes through the chat, Perfox or any log. The customer type
 
 - Full PAN, UID and OTP values (including the email OTP) are never stored. PAN/UID are used for the single CIRL request and then discarded.
 - Passwords are stored only as an argon2id hash. Password-link tokens are stored only as a SHA-256 hash. Neither the password nor the token is logged or audited.
-- Every tool call writes one masked audit entry (`timestamp`, `conversation_id`, `tool`, `event`, `input`, `output`, `ok`, `error_code`). It goes to stdout as a JSON line and to an in-memory buffer read by `/admin/audit`.
+- Every tool call writes one masked audit entry (`timestamp`, `conversation_id`, `tool`, `event`, `input`, `output`, `ok`, `error_code`, plus `from_state` and `to_state` for `journey_turn`). It goes to stdout as a JSON line and to an in-memory buffer read by `/admin/audit`.
 - Masking: PAN `ABCXXXX34F`, UID `XXXXXXXX9012`, OTP `******`, phone `+91XXXXXX5820`, email `ra*****@gmail.com`, eIA number last 4 digits only.
   As a safety net, any PAN-shaped value, 12-digit value, email address or `?t=<token>` in any other string field (e.g. `message_for_customer`) is also masked.
+- The free-text `customer_message` of `journey_turn` is never stored or logged (`[REDACTED]` in the audit).
 - Request bodies, headers and the bearer key are never logged.
 - Sessions and audit entries are kept in memory only, so they are lost on restart. Sessions sit behind the `SessionStore` interface (`app/sessions.py`), so a database-backed store can replace the in-memory one later.
 
@@ -161,7 +202,8 @@ app/
   main.py          FastAPI app: /health, /mcp, /admin/audit, bearer auth, access-log redaction
   password_page.py /set-password page: token handling, password rules, argon2, security headers
   mcp.py           JSON-RPC 2.0 dispatch
-  tools.py         11 tool schemas and handlers (CIRL access only via cirl_client); ENABLED_TOOLS filter
+  journey.py       journey_turn state machine, message parsing, duplicate protection
+  tools.py         12 tool schemas and handlers (CIRL access only via cirl_client); ENABLED_TOOLS filter
   cirl_client.py   one function per CIRL API; mock or real (NotImplementedError)
   sessions.py      SessionStore interface + in-memory TTL store
   audit.py         masked audit log
@@ -175,5 +217,5 @@ scripts/test_mcp.ps1
 
 ## Not yet implemented
 
-Real CIRL calls, reqToken logic, KYC, eIA creation, policy tools, databases and WhatsApp are out of scope.
+Real CIRL calls, reqToken logic, KYC document verification, eIA creation, policy tools, databases and WhatsApp are out of scope.
 `verify_otp` has a TODO for the Perfox auth-context callback (`X-Sa-Auth-Callback`, `X-Sa-Auth-Callback-Token`).

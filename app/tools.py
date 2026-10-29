@@ -9,7 +9,7 @@ through app.cirl_client.
 import json
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from app import cirl_client, clock, password_page
@@ -42,6 +42,8 @@ class ToolContext:
     channel: str | None = None
     auth_callback: str | None = None
     auth_callback_token: str | None = None
+    turn_cache: Any = None  # app.journey.TurnCache: duplicate protection for journey_turn
+    audit_extra: dict = field(default_factory=dict)  # extra audit fields set by the handler
 
 
 class ToolError(Exception):
@@ -620,6 +622,12 @@ def defer_kyc(ctx: ToolContext, args: dict) -> tuple[dict, str]:
     return _kyc_result(session, "KYC deferred.", CUSTOMER_KYC_DEFERRED), "kyc_deferred"
 
 
+def _journey_turn(ctx: ToolContext, args: dict) -> tuple[dict, str]:
+    from app import journey  # imported here: app.journey builds on this module
+
+    return journey.journey_turn(ctx, args)
+
+
 # --- registry ---------------------------------------------------------------------------
 
 
@@ -638,6 +646,18 @@ def _schema(properties: dict | None = None, required: list[str] | None = None) -
 TOOLS: dict[str, Tool] = {
     t.name: t
     for t in [
+        Tool(
+            "journey_turn",
+            "Runs the whole CIRL eIA onboarding conversation. Call this with every customer message, unchanged. "
+            "Send message_for_customer to the customer exactly as given. If recognised is false, the message was "
+            "not an answer to the current step: you may briefly answer the customer's question first, then send "
+            "message_for_customer.",
+            _schema(
+                {"customer_message": {"type": "string", "description": "The customer's latest message, exactly as received."}},
+                ["customer_message"],
+            ),
+            _journey_turn,
+        ),
         Tool(
             "start_journey",
             "Starts a new eIA registration for this conversation. Call this once at the start.",
@@ -809,5 +829,6 @@ def call_tool(tool: Tool, args: dict, ctx: ToolContext, audit: AuditLog) -> dict
         ok=not is_error,
         error_code=error_code,
         event=event,
+        extra=ctx.audit_extra,
     )
     return {"content": [{"type": "text", "text": json.dumps(payload)}], "isError": is_error}

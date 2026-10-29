@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.config import load_settings
 from app.main import create_app
-from tests.conftest import API_KEY, call, headers, start_to_consent
+from tests.conftest import ALL_TOOLS, API_KEY, call, headers, start_to_consent
 from tests.test_privacy import assert_clean
 
 EMAIL = "rahul@gmail.com"
@@ -156,7 +156,7 @@ def test_email_lock_survives_start_journey(client):
 
 
 def test_mock_email_otp_from_env(fake_clock):
-    app = create_app(load_settings({"GATEWAY_API_KEY": API_KEY, "MOCK_EMAIL_OTP": "654321"}))
+    app = create_app(load_settings({"GATEWAY_API_KEY": API_KEY, "MOCK_EMAIL_OTP": "654321", "ENABLED_TOOLS": ALL_TOOLS}))
     client = TestClient(app)
     start_to_consent(client)
     send(client)
@@ -171,7 +171,7 @@ def test_invalid_mock_email_otp_rejected():
 
 
 def test_real_mode_fails_safely(fake_clock):
-    app = create_app(load_settings({"GATEWAY_API_KEY": API_KEY, "CIRL_MODE_SEND_EMAIL_OTP": "real"}))
+    app = create_app(load_settings({"GATEWAY_API_KEY": API_KEY, "CIRL_MODE_SEND_EMAIL_OTP": "real", "ENABLED_TOOLS": ALL_TOOLS}))
     client = TestClient(app)
     start_to_consent(client)
     assert_tool_error(*send(client), "GW-501")

@@ -43,6 +43,17 @@ function Invoke-Tool([string]$Name, [hashtable]$Arguments = @{}) {
     $colour = if ($resp.result.isError) { "Yellow" } else { "Green" }
     Write-Host ("{0,-20} isError={1}" -f $Name, $resp.result.isError) -ForegroundColor $colour
     Write-Host ("    " + ($payload | ConvertTo-Json -Depth 10 -Compress))
+    return $payload
+}
+
+function Say([string]$Message) {
+    Write-Host ("customer> " + $Message) -ForegroundColor Cyan
+    $payload = Invoke-Tool "journey_turn" @{ customer_message = $Message }
+    if ($payload) {
+        Write-Host ("  [{0}, recognised={1}]" -f $payload.state, $payload.recognised) -ForegroundColor DarkGray
+        Write-Host ("  " + ($payload.message_for_customer -replace "`n", "`n  "))
+    }
+    return $payload
 }
 
 Write-Host "Conversation id: $ConversationId" -ForegroundColor Cyan
@@ -57,25 +68,40 @@ $tools = Invoke-Mcp "tools/list"
 $toolNames = @($tools.result.tools | ForEach-Object { $_.name })
 Write-Host ("tools/list: " + ($toolNames -join ", "))
 
-Invoke-Tool "start_journey"
-Invoke-Tool "record_consent" @{ consent = $true; notice_version = "v1.0" }
-
-# Disabled by default (ENABLED_TOOLS): only run them if the server lists them.
-if ($toolNames -contains "check_existing_eia") {
-    Invoke-Tool "check_existing_eia" @{ pan = "ABCPE1234E"; email_id = "rahul@gmail.com" }
-    Invoke-Tool "send_otp"
-    Invoke-Tool "verify_otp" @{ otp_no = "123456" }
+if ($toolNames -contains "journey_turn") {
+    # The whole journey through one tool (mock email code = MOCK_EMAIL_OTP, default 123456).
+    $null = Say "Hi"
+    $null = Say "What is this?"          # recognised=false
+    $null = Say "yes"
+    $null = Say "my email is rahul@gmail.com"
+    $null = Say "000000"                 # wrong code
+    $null = Say "RESEND"
+    $null = Say "123456"                 # verified -> password link
+    $null = Say "DONE"                   # not set yet
+    Write-Host "Open the link above in a browser and set a password, then type DONE here (or press Enter to skip)." -ForegroundColor Cyan
+    $reply = $null
+    try { $reply = Read-Host "customer" } catch { Write-Host "(non-interactive: skipped)" }
+    if ($reply) {
+        $null = Say $reply
+        $null = Say "2"                  # KYC later
+        $null = Say "Hi"                 # back to the KYC question
+    }
 }
 
-# Email OTP (mock code = MOCK_EMAIL_OTP, default 123456)
-Invoke-Tool "send_email_otp" @{ email_id = "rahul@gmail.com" }
-Invoke-Tool "send_email_otp" @{ email_id = "rahul@gmail.com" }   # code still valid -> same result, nothing sent
-Invoke-Tool "send_email_otp" @{ resend = $true }                 # customer asked for a new code -> fresh send
-Invoke-Tool "verify_email_otp" @{ otp_no = "000000" }   # wrong code -> isError GW-011
-Invoke-Tool "verify_email_otp" @{ otp_no = "123456" }
-
-# Password setup: the customer sets the password in the browser, never in the chat.
-Invoke-Tool "create_password_link"
-Invoke-Tool "check_password_status"   # not set yet -> isError GW-021
-Write-Host "Open the link above in a browser, set a password, then call check_password_status again." -ForegroundColor Cyan
-Invoke-Tool "start_kyc"   # password not confirmed yet -> isError GW-030
+# Single-step tools: disabled by default (ENABLED_TOOLS); only run them if the server lists them.
+$single = "single-" + $ConversationId
+if ($toolNames -contains "start_journey") {
+    $headers["X-Sa-Conversation-Id"] = $single
+    Invoke-Tool "start_journey" | Out-Null
+    Invoke-Tool "record_consent" @{ consent = $true; notice_version = "v1.0" } | Out-Null
+    if ($toolNames -contains "check_existing_eia") {
+        Invoke-Tool "check_existing_eia" @{ pan = "ABCPE1234E"; email_id = "rahul@gmail.com" } | Out-Null
+        Invoke-Tool "send_otp" | Out-Null
+        Invoke-Tool "verify_otp" @{ otp_no = "123456" } | Out-Null
+    }
+    Invoke-Tool "send_email_otp" @{ email_id = "rahul@gmail.com" } | Out-Null
+    Invoke-Tool "send_email_otp" @{ resend = $true } | Out-Null
+    Invoke-Tool "verify_email_otp" @{ otp_no = "123456" } | Out-Null
+    Invoke-Tool "create_password_link" | Out-Null
+    Invoke-Tool "check_password_status" | Out-Null   # not set yet -> isError GW-021
+}

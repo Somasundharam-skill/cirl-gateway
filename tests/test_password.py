@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.config import load_settings
 from app.main import RedactQueryFilter, create_app
-from tests.conftest import API_KEY, call, headers, start_to_consent
+from tests.conftest import ALL_TOOLS, API_KEY, call, headers, start_to_consent
 
 GOOD_PASSWORD = "Str0ng!pass"
 BASE_URL = "https://cirl-gateway.example.com"
@@ -28,7 +28,12 @@ NEW_LINK_TEXT = "Here's your new secure link (valid for 10 minutes):\n" + LINK_B
 def app(fake_clock):
     return create_app(
         load_settings(
-            {"GATEWAY_API_KEY": API_KEY, "PUBLIC_BASE_URL": BASE_URL + "/", "WHATSAPP_NUMBER": "+91 22699 86221"}
+            {
+                "GATEWAY_API_KEY": API_KEY,
+                "PUBLIC_BASE_URL": BASE_URL + "/",
+                "WHATSAPP_NUMBER": "+91 22699 86221",
+                "ENABLED_TOOLS": ALL_TOOLS,
+            }
         )
     )
 
@@ -274,7 +279,7 @@ def test_success_page_no_auto_redirect_for_other_channels(client):
 
 
 def test_success_page_without_whatsapp_number(fake_clock):
-    client = TestClient(create_app(load_settings({"GATEWAY_API_KEY": API_KEY})))
+    client = TestClient(create_app(load_settings({"GATEWAY_API_KEY": API_KEY, "ENABLED_TOOLS": ALL_TOOLS})))
     verified(client)
     token, _ = new_link(client)
     page = submit(client, token).text

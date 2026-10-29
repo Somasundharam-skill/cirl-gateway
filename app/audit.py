@@ -27,6 +27,7 @@ class AuditLog:
         ok: bool,
         error_code: str | None,
         event: str | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> dict:
         entry = {
             "timestamp": clock.iso(),
@@ -38,6 +39,8 @@ class AuditLog:
             "ok": ok,
             "error_code": error_code,
         }
+        if extra:
+            entry.update(mask_payload(extra))
         with self._lock:
             self._entries.append(entry)
         logger.info(json.dumps(entry, separators=(",", ":")))

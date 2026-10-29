@@ -32,7 +32,7 @@ def fake_clock(monkeypatch):
 
 
 ALL_TOOLS = (
-    "start_journey,record_consent,check_existing_eia,send_otp,verify_otp,send_email_otp,verify_email_otp,"
+    "journey_turn,start_journey,record_consent,check_existing_eia,send_otp,verify_otp,send_email_otp,verify_email_otp,"
     "create_password_link,check_password_status,start_kyc,defer_kyc"
 )
 
