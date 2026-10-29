@@ -111,7 +111,8 @@ The email OTP tools are independent of the mobile OTP flow and only need consent
 | `verify_email_otp` | `GW-011` wrong code, `GW-004` not 6 digits | That code is incorrect. Please re-enter the 6-digit OTP: |
 | `verify_email_otp` | `GW-012` expired | That code has expired. Reply RESEND and I'll send you a new one. |
 | both email tools | `GW-013` locked | Too many incorrect attempts. Please start again later by sending Hi. |
-| `create_password_link` | success | Let's set up your portal password. For your security, please set it on this secure page (link valid for 10 minutes):<br>{url}<br><br>\*Criteria:\*<br>- At least 8 characters<br>- Mixed case & 1 special character<br><br>Once done, reply DONE here. |
+| `create_password_link` | success, first link in the session | Email verified! Let's establish your portal access.<br><br>For your security, please set your password on this secure page (link valid for 10 minutes):<br>{url}<br><br>\*Criteria:\*<br>- At least 8 characters<br>- Mixed case & 1 special character<br><br>Once done, reply DONE here. |
+| `create_password_link` | success, any later link (NEW LINK) | Here's your new secure link (valid for 10 minutes):<br>{url}<br><br>\*Criteria:\*<br>- At least 8 characters<br>- Mixed case & 1 special character<br><br>Once done, reply DONE here. |
 | `check_password_status` | success | Your password has been set successfully. |
 | `check_password_status` | `GW-021` not set yet | We haven't received your password yet. Please set it using the secure link, then reply DONE. |
 | `check_password_status` | `GW-022` link expired | Your secure link has expired. Reply NEW LINK and I'll send you a fresh one. |

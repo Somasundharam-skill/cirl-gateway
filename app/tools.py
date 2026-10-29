@@ -489,14 +489,19 @@ def verify_email_otp(ctx: ToolContext, args: dict) -> tuple[dict, str]:
     }, "email_verified"
 
 
-CUSTOMER_PASSWORD_LINK = (
-    "Let's set up your portal password. For your security, please set it on this secure page "
-    "(link valid for 10 minutes):\n{url}\n\n"
+_PASSWORD_LINK_BODY = (
+    "{url}\n\n"
     "*Criteria:*\n"
     "- At least 8 characters\n"
     "- Mixed case & 1 special character\n\n"
     "Once done, reply DONE here."
 )
+CUSTOMER_PASSWORD_LINK_FIRST = (
+    "Email verified! Let's establish your portal access.\n\n"
+    "For your security, please set your password on this secure page (link valid for 10 minutes):\n"
+    + _PASSWORD_LINK_BODY
+)
+CUSTOMER_PASSWORD_LINK_NEW = "Here's your new secure link (valid for 10 minutes):\n" + _PASSWORD_LINK_BODY
 CUSTOMER_PASSWORD_SET = "Your password has been set successfully."
 CUSTOMER_PASSWORD_PENDING = (
     "We haven't received your password yet. Please set it using the secure link, then reply DONE."
@@ -511,6 +516,7 @@ def create_password_link(ctx: ToolContext, args: dict) -> tuple[dict, str]:
     if not session.consent_id:
         raise _too_early("GW-002", "Customer consent has not been recorded.")
 
+    first_link = session.password_link_hash is None
     token = password_page.new_token()
     # Replacing the hash invalidates any older unused link for this session.
     session.password_link_hash = password_page.hash_token(token)
@@ -527,7 +533,9 @@ def create_password_link(ctx: ToolContext, args: dict) -> tuple[dict, str]:
         "url": url,
         "expires_in_seconds": password_page.LINK_VALID_SECONDS,
         "message_for_agent": "Password link created.",
-        "message_for_customer": CUSTOMER_PASSWORD_LINK.format(url=url),
+        "message_for_customer": (CUSTOMER_PASSWORD_LINK_FIRST if first_link else CUSTOMER_PASSWORD_LINK_NEW).format(
+            url=url
+        ),
     }, "password_link_created"
 
 

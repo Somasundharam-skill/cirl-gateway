@@ -14,11 +14,14 @@ GOOD_PASSWORD = "Str0ng!pass"
 BASE_URL = "https://cirl-gateway.example.com"
 WA_LINK = "https://wa.me/912269986221?text=DONE"
 INVALID_TEXT = "This link has expired or was already used. Please go back to the chat and reply NEW LINK."
-LINK_TEXT = (
-    "Let's set up your portal password. For your security, please set it on this secure page "
-    "(link valid for 10 minutes):\n{url}\n\n*Criteria:*\n- At least 8 characters\n- Mixed case & 1 special character"
-    "\n\nOnce done, reply DONE here."
+LINK_BODY = (
+    "{url}\n\n*Criteria:*\n- At least 8 characters\n- Mixed case & 1 special character\n\nOnce done, reply DONE here."
 )
+LINK_TEXT = (
+    "Email verified! Let's establish your portal access.\n\n"
+    "For your security, please set your password on this secure page (link valid for 10 minutes):\n" + LINK_BODY
+)
+NEW_LINK_TEXT = "Here's your new secure link (valid for 10 minutes):\n" + LINK_BODY
 
 
 @pytest.fixture
@@ -149,6 +152,26 @@ def test_new_link_invalidates_old(client):
     assert submit(client, old).status_code == 410
     assert client.get(f"/set-password?t={new}").status_code == 200
     assert submit(client, new).status_code == 200
+
+
+def test_first_link_text_then_new_link_text(client):
+    verified(client)
+    _, first = new_link(client)
+    assert first["message_for_customer"].startswith("Email verified!")
+    assert first["message_for_customer"] == LINK_TEXT.format(url=first["url"])
+    for _ in range(2):  # every later link, e.g. after NEW LINK
+        _, later = new_link(client)
+        assert not later["message_for_customer"].startswith("Email verified!")
+        assert later["message_for_customer"].startswith("Here's your new secure link (valid for 10 minutes):\n")
+        assert later["message_for_customer"] == NEW_LINK_TEXT.format(url=later["url"])
+
+
+def test_new_link_text_after_expiry(client, fake_clock):
+    verified(client)
+    new_link(client)
+    fake_clock.advance(600)
+    _, later = new_link(client)
+    assert later["message_for_customer"] == NEW_LINK_TEXT.format(url=later["url"])
 
 
 @pytest.mark.parametrize(
