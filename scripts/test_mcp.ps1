@@ -76,3 +76,4 @@ Invoke-Tool "verify_email_otp" @{ otp_no = "123456" }
 Invoke-Tool "create_password_link"
 Invoke-Tool "check_password_status"   # not set yet -> isError GW-021
 Write-Host "Open the link above in a browser, set a password, then call check_password_status again." -ForegroundColor Cyan
+Invoke-Tool "start_kyc"   # password not confirmed yet -> isError GW-030

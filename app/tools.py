@@ -534,6 +534,9 @@ def create_password_link(ctx: ToolContext, args: dict) -> tuple[dict, str]:
 def check_password_status(ctx: ToolContext, args: dict) -> tuple[dict, str]:
     session = _require_session(ctx)
     if session.password_hash:
+        if not session.password_confirmed:
+            session.password_confirmed = True
+            ctx.store.save(session)
         return {
             "ok": True,
             "password_set": True,
@@ -556,6 +559,50 @@ def check_password_status(ctx: ToolContext, args: dict) -> tuple[dict, str]:
         "The customer has not set their password yet.",
         message_for_customer=CUSTOMER_PASSWORD_PENDING,
     )
+
+
+CUSTOMER_KYC_STARTED = (
+    "Please select your preferred document for immediate validation:\nReply 1 for Aadhaar / UID or 2 for PAN."
+)
+CUSTOMER_KYC_DEFERRED = "No problem. You can complete your KYC any time by sending Hi. Befikar Raho!"
+
+
+def _require_password_confirmed(ctx: ToolContext) -> Session:
+    session = ctx.store.get(ctx.conversation_id)
+    if session is None or not session.password_confirmed:
+        raise _too_early("GW-030", "Password setup has not been completed.")
+    return session
+
+
+def _kyc_result(session: Session, message_for_agent: str, message_for_customer: str) -> dict:
+    return {
+        "ok": True,
+        "kyc_choice": session.kyc_choice,
+        "kyc_choice_at": session.kyc_choice_at,
+        "message_for_agent": message_for_agent,
+        "message_for_customer": message_for_customer,
+    }
+
+
+def _record_kyc_choice(ctx: ToolContext, session: Session, choice: str) -> None:
+    # Idempotent: repeating the same choice keeps the original timestamp.
+    # A different choice (the customer changed their mind) replaces it.
+    if session.kyc_choice != choice:
+        session.kyc_choice = choice
+        session.kyc_choice_at = clock.iso()
+        ctx.store.save(session)
+
+
+def start_kyc(ctx: ToolContext, args: dict) -> tuple[dict, str]:
+    session = _require_password_confirmed(ctx)
+    _record_kyc_choice(ctx, session, "now")
+    return _kyc_result(session, "KYC started.", CUSTOMER_KYC_STARTED), "kyc_started"
+
+
+def defer_kyc(ctx: ToolContext, args: dict) -> tuple[dict, str]:
+    session = _require_password_confirmed(ctx)
+    _record_kyc_choice(ctx, session, "later")
+    return _kyc_result(session, "KYC deferred.", CUSTOMER_KYC_DEFERRED), "kyc_deferred"
 
 
 # --- registry ---------------------------------------------------------------------------
@@ -673,6 +720,22 @@ TOOLS: dict[str, Tool] = {
             "Send message_for_customer to the customer exactly as given.",
             _schema(),
             check_password_status,
+        ),
+        Tool(
+            "start_kyc",
+            "Records that the customer wants to complete KYC now. "
+            "Call this when the customer chooses to do KYC now, after their password is set. "
+            "Send message_for_customer to the customer exactly as given.",
+            _schema(),
+            start_kyc,
+        ),
+        Tool(
+            "defer_kyc",
+            "Records that the customer wants to complete KYC later. "
+            "Call this when the customer chooses to do KYC later, after their password is set. "
+            "Send message_for_customer to the customer exactly as given.",
+            _schema(),
+            defer_kyc,
         ),
     ]
 }

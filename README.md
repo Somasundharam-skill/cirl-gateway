@@ -34,7 +34,7 @@ python -m pytest
 |---|---|---|
 | `GATEWAY_API_KEY` | *(none)* | Bearer token required on `/mcp` and `/admin/audit`. If unset, every request is rejected. |
 | `SESSION_TTL_MINUTES` | `60` | Idle time before a conversation's session is dropped. |
-| `ENABLED_TOOLS` | `start_journey,record_consent,send_email_otp,verify_email_otp,create_password_link,check_password_status` | Comma-separated tools that `tools/list` shows and `tools/call` accepts. Empty means the default. A tool that isn't listed is rejected exactly like an unknown tool (-32602). An unknown name stops the server at startup. |
+| `ENABLED_TOOLS` | `start_journey,record_consent,send_email_otp,verify_email_otp,create_password_link,check_password_status,start_kyc,defer_kyc` | Comma-separated tools that `tools/list` shows and `tools/call` accepts. Empty means the default. A tool that isn't listed is rejected exactly like an unknown tool (-32602). An unknown name stops the server at startup. |
 | `CIRL_MODE_CHECK_EXISTING_EIA` | `mock` | `mock` or `real` for CIRL verifyeIAAccount. |
 | `CIRL_MODE_SEND_OTP` | `mock` | `mock` or `real` for CIRL sendOtp. |
 | `CIRL_MODE_VERIFY_OTP` | `mock` | `mock` or `real` for CIRL verifyOtp. |
@@ -68,7 +68,7 @@ python -m pytest
   - Success: `isError: false`, and the JSON has `ok: true` and a neutral `message_for_agent` (e.g. "Consent recorded.").
   - Business failure: `isError: true`, and the JSON has `ok: false`, `error_code`, `error_msg` and `message_for_agent` (what the customer must fix for this tool).
   - `message_for_agent` never names another tool or the next step, because the journey order is decided by Perfox Steps.
-  - A tool called before its step is reached (`GW-002`, `GW-005`, `GW-006`, `GW-014`, `GW-020`, `GW-023`, below) returns `message_for_agent: "Not available yet. Continue with the current step."` and no `message_for_customer`, so the agent has nothing to relay to the customer.
+  - A tool called before its step is reached (`GW-002`, `GW-005`, `GW-006`, `GW-014`, `GW-020`, `GW-023`, `GW-030`, below) returns `message_for_agent: "Not available yet. Continue with the current step."` and no `message_for_customer`, so the agent has nothing to relay to the customer.
 - JSON-RPC errors are used only for protocol problems: parse error (-32700), invalid request or batch (-32600), unknown method (-32601), unknown tool, bad params or a missing `X-Sa-Conversation-Id` header (-32602).
 
 Headers read on every `tools/call`: `X-Sa-Conversation-Id` (required, the session key), `X-Sa-End-User-Phone`,
@@ -77,7 +77,7 @@ and the channel are stored.
 
 ## Tools and mock behaviour
 
-**For now the journey is registration only:** `start_journey` → `record_consent` → `send_email_otp` → `verify_email_otp` → `create_password_link` → `check_password_status` (consent, email, email OTP, verified, password). These six are the default `ENABLED_TOOLS`. The order is decided by Perfox Steps, not the gateway. Each tool still enforces its own preconditions, such as consent.
+**For now the journey is registration only:** `start_journey` → `record_consent` → `send_email_otp` → `verify_email_otp` → `create_password_link` → `check_password_status` → `start_kyc` or `defer_kyc` (consent, email, email OTP, verified, password, KYC intent). These eight are the default `ENABLED_TOOLS`. The order is decided by Perfox Steps, not the gateway. Each tool still enforces its own preconditions, such as consent.
 
 `check_existing_eia`, `send_otp` and `verify_otp` are **disabled by default**. Their code and tests are kept, and they can be switched back on by adding them to `ENABLED_TOOLS`. While disabled, they are not listed and `tools/call` answers `Unknown tool`.
 
@@ -92,12 +92,14 @@ and the channel are stored.
 | `verify_email_otp` | `otp_no: string` (6 digits) | `send_email_otp` | The correct code → `email_verified: true`. | `GW-011` wrong code, `GW-012` more than 120 s after send, `GW-013` locked after 3 wrong attempts in total (across resends, for the whole session), `GW-014` no email OTP sent, `GW-002` no consent, `GW-004` not 6 digits |
 | `create_password_link` | – | `email_verified` | Creates a one-time link `{PUBLIC_BASE_URL}/set-password?t=<token>`, valid 10 minutes. Only the SHA-256 of the token is stored. A new link invalidates any older unused one. Returns `{ok, url, expires_in_seconds: 600, message_for_customer}`. | `GW-020` email not verified, `GW-002` no consent |
 | `check_password_status` | – | session | Password set on the page → `{ok, password_set: true}`. | `GW-021` not set yet (link still valid), `GW-022` link expired or used up, `GW-023` no link created yet |
+| `start_kyc` | – | `check_password_status` succeeded | Records `kyc_choice: "now"` with a timestamp. Idempotent: a repeat call returns the same result. Returns `{ok, kyc_choice, kyc_choice_at, message_for_customer}`. Audit event `kyc_started`. | `GW-030` password not confirmed yet |
+| `defer_kyc` | – | `check_password_status` succeeded | Records `kyc_choice: "later"` with a timestamp. The customer can still call `start_kyc` afterwards (changing their mind replaces the choice and timestamp). Audit event `kyc_deferred`. | `GW-030` password not confirmed yet |
 
 The email OTP tools are independent of the mobile OTP flow and only need consent.
 
 ### `message_for_customer`
 
-`send_email_otp`, `verify_email_otp`, `create_password_link` and `check_password_status` also return `message_for_customer`: the exact text the agent sends to the customer.
+`send_email_otp`, `verify_email_otp`, `create_password_link`, `check_password_status`, `start_kyc` and `defer_kyc` also return `message_for_customer`: the exact text the agent sends to the customer.
 `isError`, `error_code` and `message_for_agent` are unchanged.
 
 | Tool | Case | `message_for_customer` |
@@ -113,8 +115,10 @@ The email OTP tools are independent of the mobile OTP flow and only need consent
 | `check_password_status` | success | Your password has been set successfully. |
 | `check_password_status` | `GW-021` not set yet | We haven't received your password yet. Please set it using the secure link, then reply DONE. |
 | `check_password_status` | `GW-022` link expired | Your secure link has expired. Reply NEW LINK and I'll send you a fresh one. |
+| `start_kyc` | success | Please select your preferred document for immediate validation:<br>Reply 1 for Aadhaar / UID or 2 for PAN. |
+| `defer_kyc` | success | No problem. You can complete your KYC any time by sending Hi. Befikar Raho! |
 
-`GW-002`, `GW-005`, `GW-006`, `GW-014`, `GW-020`, `GW-023` (called too early) and `GW-501` have no customer text, so the field is left out. The agent should rely on `message_for_agent` for those.
+`GW-002`, `GW-005`, `GW-006`, `GW-014`, `GW-020`, `GW-023`, `GW-030` (called too early) and `GW-501` have no customer text, so the field is left out. The agent should rely on `message_for_agent` for those.
 
 Other gateway codes: `GW-001` no active journey (never started, or expired), `GW-501` CIRL `real` mode not implemented.
 
@@ -156,7 +160,7 @@ app/
   main.py          FastAPI app: /health, /mcp, /admin/audit, bearer auth, access-log redaction
   password_page.py /set-password page: token handling, password rules, argon2, security headers
   mcp.py           JSON-RPC 2.0 dispatch
-  tools.py         9 tool schemas and handlers (CIRL access only via cirl_client); ENABLED_TOOLS filter
+  tools.py         11 tool schemas and handlers (CIRL access only via cirl_client); ENABLED_TOOLS filter
   cirl_client.py   one function per CIRL API; mock or real (NotImplementedError)
   sessions.py      SessionStore interface + in-memory TTL store
   audit.py         masked audit log

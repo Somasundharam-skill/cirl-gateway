@@ -51,6 +51,11 @@ class Session:
     password_link_used: bool = False
     password_hash: str | None = None
     password_set_at: str | None = None
+    password_confirmed: bool = False  # check_password_status has reported the password as set
+
+    # KYC intent: "now" or "later"
+    kyc_choice: str | None = None
+    kyc_choice_at: str | None = None
 
 
 class SessionStore(ABC):

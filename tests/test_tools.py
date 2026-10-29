@@ -316,6 +316,8 @@ def test_messages_name_no_tools(client, app, fake_clock):
     run("create_password_link")
     fake_clock.advance(600)
     run("check_password_status")  # password already set: still ok
+    run("defer_kyc")
+    run("start_kyc")
 
     successes = [m for m in messages if not m[1]]
     assert {m[0] for m in successes} == set(TOOL_NAMES)

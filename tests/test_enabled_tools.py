@@ -13,6 +13,8 @@ REGISTRATION = [
     "verify_email_otp",
     "create_password_link",
     "check_password_status",
+    "start_kyc",
+    "defer_kyc",
 ]
 DISABLED = ["check_existing_eia", "send_otp", "verify_otp"]
 

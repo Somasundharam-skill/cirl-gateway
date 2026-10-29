@@ -18,6 +18,8 @@ DEFAULT_ENABLED_TOOLS = (
     "verify_email_otp",
     "create_password_link",
     "check_password_status",
+    "start_kyc",
+    "defer_kyc",
 )
 
 
