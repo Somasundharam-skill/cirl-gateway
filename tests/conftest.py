@@ -4,13 +4,15 @@ import logging
 import pytest
 from fastapi.testclient import TestClient
 
-from app import clock
+from app import cirl_client, clock
 from app.config import load_settings
 from app.main import create_app
 
 API_KEY = "test-key"
 CONVERSATION_ID = "conv-test-1"
-PHONE = "+91 98765 45820"
+RAMESH_PHONE = "+91 73733 45820"  # two policies (data/employees.csv)
+PRIYA_PHONE = "+91 98765 45820"  # no policies
+UNKNOWN_PHONE = "+91 90000 00001"
 
 
 class FakeClock:
@@ -31,33 +33,26 @@ def fake_clock(monkeypatch):
     return fc
 
 
-ALL_TOOLS = (
-    "journey_turn,start_journey,record_consent,check_existing_eia,send_otp,verify_otp,send_email_otp,verify_email_otp,"
-    "create_password_link,check_password_status,start_kyc,defer_kyc"
-)
+@pytest.fixture(autouse=True)
+def fresh_mock_cirl():
+    """The mock CIRL keeps OTP state per eIA in process memory; start every test clean."""
+    cirl_client.reset_mock()
+    yield
+    cirl_client.reset_mock()
+
+
+def make_app(**env):
+    return create_app(load_settings({"GATEWAY_API_KEY": API_KEY, **env}))
 
 
 @pytest.fixture
 def app(fake_clock):
-    # Every tool enabled, so the disabled-by-default code (check_existing_eia,
-    # send_otp, verify_otp) stays tested. default_app has the real default.
-    return create_app(load_settings({"GATEWAY_API_KEY": API_KEY, "ENABLED_TOOLS": ALL_TOOLS}))
+    return make_app()
 
 
 @pytest.fixture
 def client(app):
     return TestClient(app)
-
-
-@pytest.fixture
-def default_app(fake_clock):
-    """ENABLED_TOOLS unset: the registration-only journey."""
-    return create_app(load_settings({"GATEWAY_API_KEY": API_KEY}))
-
-
-@pytest.fixture
-def default_client(default_app):
-    return TestClient(default_app)
 
 
 class ListHandler(logging.Handler):
@@ -81,7 +76,7 @@ def captured_logs():
         lg.removeHandler(handler)
 
 
-def headers(conversation_id: str | None = CONVERSATION_ID, phone: str | None = PHONE, **extra) -> dict:
+def headers(conversation_id: str | None = CONVERSATION_ID, phone: str | None = RAMESH_PHONE, **extra) -> dict:
     h = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json, text/event-stream"}
     if conversation_id is not None:
         h["X-Sa-Conversation-Id"] = conversation_id
@@ -109,12 +104,5 @@ def call(client, tool, arguments=None, **header_kw) -> tuple[dict, dict]:
     return result, json.loads(result["content"][0]["text"])
 
 
-def start_to_consent(client, **header_kw):
-    call(client, "start_journey", **header_kw)
-    call(client, "record_consent", {"consent": True, "notice_version": "v1.0"}, **header_kw)
-
-
-def start_to_otp(client, pan="ABCPE1234E"):
-    start_to_consent(client)
-    call(client, "check_existing_eia", {"pan": pan, "email_id": "rahul@gmail.com"})
-    return call(client, "send_otp")
+def audit_entries(client) -> list[dict]:
+    return client.get("/admin/audit", headers=headers()).json()["entries"]

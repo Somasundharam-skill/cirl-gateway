@@ -1,4 +1,4 @@
-"""CIRL gateway: mock MCP server for the WhatsApp eIA onboarding demo."""
+"""CIRL gateway: mock MCP server for the WhatsApp policy inquiry demo."""
 
 import json
 import logging
@@ -10,35 +10,19 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from app import mcp, password_page
+from app import mcp
 from app.audit import AuditLog
-from app.journey import TurnCache
 from app.config import Settings, load_settings
+from app.directory import EmployeeDirectory
+from app.masking import mask_phone
 from app.sessions import InMemorySessionStore
-from app.tools import check_enabled_tools
 
 logger = logging.getLogger("cirl_gateway")
-
-
-class RedactQueryFilter(logging.Filter):
-    """Strip the query string from uvicorn access-log lines for /set-password (the link token is in it)."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        # uvicorn.access args: (client_addr, method, full_path, http_version, status_code)
-        args = record.args
-        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
-            if args[2].startswith("/set-password"):
-                record.args = args[:2] + (args[2].split("?", 1)[0],) + args[3:]
-        return True
 
 
 def configure_logging(level: str) -> None:
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logging.getLogger("cirl_gateway").setLevel(level)
-
-    access_logger = logging.getLogger("uvicorn.access")
-    if not any(isinstance(f, RedactQueryFilter) for f in access_logger.filters):
-        access_logger.addFilter(RedactQueryFilter())
 
     # Audit lines are emitted as bare JSON, one per line.
     audit_logger = logging.getLogger("cirl_gateway.audit")
@@ -56,19 +40,23 @@ def _unauthorized() -> JSONResponse:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or load_settings()
-    check_enabled_tools(settings)
     configure_logging(settings.log_level)
     if not settings.gateway_api_key:
         logger.warning("GATEWAY_API_KEY is not set: all /mcp and /admin requests will be rejected")
+    if settings.test_phone:
+        logger.warning(
+            "TEST_PHONE is set (%s): requests without X-Sa-End-User-Phone act as that employee. "
+            "For web-chat testing only; never set it in production.",
+            mask_phone(settings.test_phone),
+        )
+    directory = EmployeeDirectory.load(settings.employee_directory_path)
+    logger.info("Employee directory loaded: %d employees", len(directory))
 
     app = FastAPI(title="CIRL Gateway", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
     app.state.store = InMemorySessionStore(ttl_seconds=settings.session_ttl_minutes * 60)
     app.state.audit = AuditLog()
-    app.state.turn_cache = TurnCache()
-    password_page.add_routes(app)
-    if not settings.whatsapp_number:
-        logger.warning("WHATSAPP_NUMBER is not set: the password success page will have no 'Return to WhatsApp' button")
+    app.state.directory = directory
 
     def authorized(request: Request) -> bool:
         expected = settings.gateway_api_key
@@ -97,8 +85,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     settings=settings,
                     store=app.state.store,
                     audit=app.state.audit,
+                    directory=app.state.directory,
                     new_session_id=lambda: uuid.uuid4().hex,
-                    turn_cache=app.state.turn_cache,
                 )
             except Exception:
                 logger.exception("Unhandled error in /mcp")

@@ -10,25 +10,18 @@ services:
     envVars:
       - key: GATEWAY_API_KEY
         sync: false
+      - key: EMPLOYEE_DIRECTORY_PATH
+        value: data/employees.csv
+      # Web-chat testing only. Never set in production.
+      - key: TEST_PHONE
+        sync: false
       - key: SESSION_TTL_MINUTES
-        sync: false
-      - key: ENABLED_TOOLS
-        sync: false
-      - key: CIRL_MODE_CHECK_EXISTING_EIA
-        sync: false
-      - key: CIRL_MODE_SEND_OTP
-        sync: false
-      - key: CIRL_MODE_VERIFY_OTP
-        sync: false
-      - key: CIRL_MODE_SEND_EMAIL_OTP
-        sync: false
-      - key: MOCK_EMAIL_OTP
-        sync: false
-      - key: PUBLIC_BASE_URL
-        sync: false
-      - key: WHATSAPP_NUMBER
-        sync: false
-      - key: PRIVACY_NOTICE_URL
-        sync: false
+        value: "60"
       - key: LOG_LEVEL
-        sync: false
+        value: INFO
+      - key: CIRL_MODE_SEND_OTP
+        value: mock
+      - key: CIRL_MODE_VERIFY_OTP
+        value: mock
+      - key: CIRL_MODE_GET_LIST_OF_POLICY
+        value: mock

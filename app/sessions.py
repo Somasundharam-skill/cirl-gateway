@@ -1,4 +1,4 @@
-"""Journey sessions, keyed by Perfox conversation id.
+"""Conversation sessions, keyed by Perfox conversation id.
 
 Handlers depend only on SessionStore, so a database-backed store can replace
 InMemorySessionStore without touching tool code. get() returns a copy:
@@ -16,56 +16,24 @@ from app import clock
 @dataclass
 class Session:
     conversation_id: str
-    state: str = "STARTED"
-    journey_state: str = "START"  # journey_turn state machine (app.journey)
     phone: str | None = None  # +91XXXXXXXXXX
     channel: str | None = None
+    eia_no: str | None = None  # from the employee directory
     created_at: float = 0.0
     last_seen_at: float = 0.0
 
-    consent_id: str | None = None
-    consent_at: str | None = None
-    notice_version: str | None = None
-
-    client_trxn_id: str | None = None
-    eia_exists: bool | None = None
-    email_id: str | None = None
-    mobile_no: str | None = None  # 10 digits
-
-    otp_send_count: int = 0
-    otp_sent_at: float | None = None
-    otp_failed_attempts: int = 0
-    otp_verified: bool = False
-
-    email_otp_email_id: str | None = None
-    email_otp_send_count: int = 0
-    email_otp_sent_at: float | None = None
-    email_otp_expires_at: float | None = None
-    email_otp_failed_attempts: int = 0  # counted across resends
-    email_verified: bool = False
-
-    # Password setup. Only SHA-256 of the link token and an argon2 hash of the
-    # password are kept; neither the token nor the password is stored.
-    password_link_hash: str | None = None
-    password_link_expires_at: float | None = None
-    password_link_attempts: int = 0
-    password_link_used: bool = False
-    password_hash: str | None = None
-    password_set_at: str | None = None
-    password_confirmed: bool = False  # check_password_status has reported the password as set
-
-    # KYC intent: "now" or "later"
-    kyc_choice: str | None = None
-    kyc_choice_at: str | None = None
+    # Identity check by OTP. The OTP itself is never stored.
+    otp_trxn_no: str | None = None
+    otp_expires_at: float | None = None
+    masked_mobile_no: str | None = None
+    masked_email_id: str | None = None
+    otp_locked_until: float | None = None
+    identity_verified: bool = False
 
 
 class SessionStore(ABC):
     @abstractmethod
     def get(self, conversation_id: str) -> Session | None: ...
-
-    @abstractmethod
-    def get_by_password_link(self, link_hash: str) -> Session | None:
-        """The session whose current password link has this SHA-256 hash."""
 
     @abstractmethod
     def save(self, session: Session) -> None: ...
@@ -93,15 +61,6 @@ class InMemorySessionStore(SessionStore):
                 del self._data[conversation_id]
                 return None
             return dataclasses.replace(session)
-
-    def get_by_password_link(self, link_hash: str) -> Session | None:
-        # Linear scan is fine for an in-memory demo; a database would index this column.
-        now = clock.now()
-        with self._lock:
-            for session in self._data.values():
-                if session.password_link_hash == link_hash and not self._expired(session, now):
-                    return dataclasses.replace(session)
-        return None
 
     def save(self, session: Session) -> None:
         now = clock.now()

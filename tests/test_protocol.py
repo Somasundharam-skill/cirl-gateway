@@ -37,26 +37,11 @@ def test_initialized_notification_accepted(client):
 
 
 def test_tools_list_shape(client):
-    # `client` has every tool enabled; the default list is tested in test_enabled_tools.py.
     tools = rpc(client, "tools/list").json()["result"]["tools"]
-    names = [t["name"] for t in tools]
-    assert names == [
-        "journey_turn",
-        "start_journey",
-        "record_consent",
-        "check_existing_eia",
-        "send_otp",
-        "verify_otp",
-        "send_email_otp",
-        "verify_email_otp",
-        "create_password_link",
-        "check_password_status",
-        "start_kyc",
-        "defer_kyc",
-    ]
+    assert [t["name"] for t in tools] == ["list_policies", "verify_identity_otp"]
     for t in tools:
         assert t["description"] and "call" in t["description"].lower()
-        assert t["input_schema"]["type"] == "object"
+        assert t["input_schema"]["type"] == "object" and t["inputSchema"] == t["input_schema"]
 
 
 def test_unknown_method_is_jsonrpc_error(client):
@@ -80,6 +65,6 @@ def test_malformed_requests(client):
 
 
 def test_missing_conversation_id(client):
-    body = rpc(client, "tools/call", {"name": "start_journey", "arguments": {}}, conversation_id=None).json()
+    body = rpc(client, "tools/call", {"name": "list_policies", "arguments": {}}, conversation_id=None).json()
     assert body["error"]["code"] == -32602
     assert "X-Sa-Conversation-Id" in body["error"]["message"]
