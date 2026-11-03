@@ -19,7 +19,7 @@ NOT_REGISTERED = (
 )
 OTP_SENT_RAMESH = (
     "To protect your details, we've sent a code to your registered mobile 73XXXXXX20 and email "
-    "ra*****@example.com. Please enter it here."
+    "so*****@example.com. Please enter it here."
 )
 OTP_WRONG = "That code is incorrect. Please re-enter it."
 OTP_EXPIRED = "That code has expired. Ask me to show your policies again and I'll send a new one."
@@ -260,7 +260,7 @@ def test_different_number_on_same_conversation_must_verify(client, app):
     list_policies(client)
     verify(client, "123456")
     assert_ok(*list_policies(client, phone=PRIYA_PHONE), "otp_sent", OTP_SENT_RAMESH.replace(
-        "73XXXXXX20", "98XXXXXX20").replace("ra*****", "pr*****"))
+        "73XXXXXX20", "98XXXXXX20").replace("so*****", "pr*****"))
     assert session(app).identity_verified is False
 
 
@@ -327,7 +327,7 @@ def test_audit_is_masked(client, captured_logs):
 
     text = json.dumps(entries) + "\n".join(captured_logs)
     for secret in ("123456", "000000", "36521478", "2310987654", "1921008101111", "7373345820",
-                   "ramesh.kumar@example.com", "Ramesh"):
+                   "somasundharam@example.com", "Ramesh"):
         assert secret not in text, secret
     # The customer still gets the full numbers.
     assert "Policy No: 36521478" in verify(client, "123456")[1]["message_for_customer"]

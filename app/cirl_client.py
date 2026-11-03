@@ -24,8 +24,10 @@ LOCK_SECONDS = 24 * 60 * 60
 
 # Contact details CIRL holds for each mock eIA (the OTP goes to these).
 MOCK_ACCOUNTS = {
-    "1921008101111": {"mobile_no": "7373345820", "email_id": "ramesh.kumar@example.com"},  # Ramesh
+    "1921008101111": {"mobile_no": "7373345820", "email_id": "somasundharam@example.com"},  # som
     "1921008102222": {"mobile_no": "9876545820", "email_id": "priya.sharma@example.com"},  # Priya, no policies
+    "1921008103333": {"mobile_no": "9740800311", "email_id": "gurdeep.singh@example.com"},  # Gurdeep
+    "1921008104444": {"mobile_no": "9886909987", "email_id": "vishwa.kiran@example.com"},  # Vishwa Kiran
 }
 
 # getListOfPolicy sample data.
@@ -62,6 +64,46 @@ MOCK_POLICIES = {
         },
     ],
     "1921008102222": [],
+    "1921008103333": [
+        {
+            POLICY_NO: "48120936",
+            POLICY_NAME: "LIC's Tech Term",
+            INSURER_NAME: "Life Insurance Corporation of India",
+            "policy_type": "Life",
+            POLICY_STATUS: "Demat",
+            SUM_ASSURED: "10000000",
+            NEXT_PREMIUM_DUE_DATE: "20-03-2027",
+        },
+        {
+            POLICY_NO: "5021783946",
+            POLICY_NAME: "SBI Life Smart Wealth Builder",
+            INSURER_NAME: "SBI Life Insurance Company Limited",
+            "policy_type": "Life",
+            POLICY_STATUS: "Demat",
+            SUM_ASSURED: "1500000",
+            NEXT_PREMIUM_DUE_DATE: "05-12-2026",
+        },
+    ],
+    "1921008104444": [
+        {
+            POLICY_NO: "7340192856",
+            POLICY_NAME: "ICICI Pru iProtect Smart",
+            INSURER_NAME: "ICICI Prudential Life Insurance Company Limited",
+            "policy_type": "Life",
+            POLICY_STATUS: "Demat",
+            SUM_ASSURED: "7500000",
+            NEXT_PREMIUM_DUE_DATE: "28-02-2027",
+        },
+        {
+            POLICY_NO: "6612094587",
+            POLICY_NAME: "",
+            INSURER_NAME: "Max Life Insurance Company Limited",
+            "policy_type": "Life",
+            POLICY_STATUS: "In Process",
+            SUM_ASSURED: "",
+            NEXT_PREMIUM_DUE_DATE: "",
+        },
+    ],
 }
 
 
