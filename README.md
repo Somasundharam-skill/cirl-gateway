@@ -159,11 +159,12 @@ codes (`E-304`). The code is always `123456`.
 
 ## Deploy to Vercel
 
-The app runs as one Python serverless function. `api/index.py` imports the FastAPI app, and `vercel.json` routes
-every path (`/health`, `/mcp`, `/admin/audit`) to it. `.vercelignore` keeps `.venv`, `.env` and the tests out of the upload.
+The app runs as one Python serverless function. Vercel finds the FastAPI `app` in `app/main.py` by itself and sends
+every path (`/health`, `/mcp`, `/admin/audit`) to it, so there is no rewrite. `vercel.json` only adds `data/` to the
+function. `.vercelignore` keeps `.venv`, `.env` and the tests out of the upload.
 
 1. Push this folder to a Git repo.
-2. In Vercel, choose **Add New → Project**, import the repo, and keep Framework Preset **Other** with no build command.
+2. In Vercel, choose **Add New → Project**, import the repo, and keep Framework Preset **FastAPI** (detected) with no build command.
 3. Under **Environment Variables**, add `GATEWAY_API_KEY` (required). The others are optional and use the defaults above.
    **Leave `TEST_PHONE` empty in production.**
 4. Deploy. Python is pinned in `.python-version` (3.12). You can also deploy from this folder with `npx vercel --prod`.
@@ -189,8 +190,7 @@ app/
   validation.py    phone normalisation, OTP format
   config.py        env settings
   clock.py         time source (patched in tests)
-api/index.py       Vercel entry point (imports app.main)
-vercel.json        routes every path to api/index.py
+vercel.json        bundles data/ with the Vercel function
 data/employees.csv
 tests/             pytest suite
 scripts/test_mcp.ps1
