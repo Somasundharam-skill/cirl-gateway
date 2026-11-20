@@ -4,7 +4,7 @@
 
 .EXAMPLE
   .\scripts\test_mcp.ps1 -BaseUrl http://localhost:8000 -ApiKey change-me
-  .\scripts\test_mcp.ps1 -BaseUrl https://cirl-gateway.onrender.com   # uses $env:GATEWAY_API_KEY
+  .\scripts\test_mcp.ps1 -BaseUrl https://cirl-gateway.vercel.app   # uses $env:GATEWAY_API_KEY
 #>
 param(
     [string]$BaseUrl = "http://localhost:8000",

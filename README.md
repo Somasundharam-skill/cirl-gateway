@@ -48,7 +48,7 @@ python -m pytest
 | `CIRL_MODE_SEND_OTP` | `mock` | `mock` or `real` for CIRL sendOtp. |
 | `CIRL_MODE_VERIFY_OTP` | `mock` | `mock` or `real` for CIRL verifyOtp. |
 | `CIRL_MODE_GET_LIST_OF_POLICY` | `mock` | `mock` or `real` for CIRL getListOfPolicy. |
-| `PORT` | `8000` | Port to bind (Render sets this). |
+| `PORT` | `8000` | Port to bind when run locally with `python -m app.main`. Not used on Vercel. |
 
 `real` mode is not implemented yet. A call in `real` mode returns `isError` with `GW-501` and makes no network call.
 
@@ -157,16 +157,22 @@ codes (`E-304`). The code is always `123456`.
 - Sessions and audit entries are in memory only, so they are lost on restart. Sessions sit behind the `SessionStore`
   interface (`app/sessions.py`), so a database-backed store can replace the in-memory one later.
 
-## Deploy to Render
+## Deploy to Vercel
+
+The app runs as one Python serverless function. `api/index.py` imports the FastAPI app, and `vercel.json` routes
+every path (`/health`, `/mcp`, `/admin/audit`) to it. `.vercelignore` keeps `.venv`, `.env` and the tests out of the upload.
 
 1. Push this folder to a Git repo.
-2. In Render, choose **New → Blueprint** and select the repo. `render.yaml` defines one web service with health check `/health`.
-3. Fill in the env vars Render prompts for. `GATEWAY_API_KEY` is required; the others have defaults in `render.yaml`.
+2. In Vercel, choose **Add New → Project**, import the repo, and keep Framework Preset **Other** with no build command.
+3. Under **Environment Variables**, add `GATEWAY_API_KEY` (required). The others are optional and use the defaults above.
    **Leave `TEST_PHONE` empty in production.**
-4. Python is pinned in `.python-version` (3.12). If your Render account needs a full version, add `PYTHON_VERSION` (e.g. `3.12.8`).
-5. After deploy, run: `.\scripts\test_mcp.ps1 -BaseUrl https://<service>.onrender.com -ApiKey <key>`.
+4. Deploy. Python is pinned in `.python-version` (3.12). You can also deploy from this folder with `npx vercel --prod`.
+5. After deploy, run: `.\scripts\test_mcp.ps1 -BaseUrl https://<project>.vercel.app -ApiKey <key>`.
 
-The free plan sleeps when idle, and that clears all in-memory sessions, audit entries and mock OTP state.
+Sessions, audit entries and mock OTP state live in the function's memory. Vercel can start a fresh instance at any
+time (after a few idle minutes, or when traffic is spread across instances), and that instance starts empty: a
+conversation may then have to ask for its policies again and get a new code, and `/admin/audit` shows only what that
+instance has handled. For anything beyond a demo, put sessions and OTP state in an external store (for example Redis).
 
 ## Layout
 
@@ -183,6 +189,8 @@ app/
   validation.py    phone normalisation, OTP format
   config.py        env settings
   clock.py         time source (patched in tests)
+api/index.py       Vercel entry point (imports app.main)
+vercel.json        routes every path to api/index.py
 data/employees.csv
 tests/             pytest suite
 scripts/test_mcp.ps1
